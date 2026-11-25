@@ -1,4 +1,4 @@
-name: Build VestaHudBridge v4.2 CITY-FAST APK
+name: Build VestaHudBridge v4.3 PRO-FIX APK
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
         with:
           gradle-version: '8.4'
 
-      - name: 4. Generate Android Project Files (VestaHudBridge v4.2 CITY-FAST)
+      - name: 4. Generate Android Project Files (VestaHudBridge v4.3 PRO-FIX)
         run: |
           mkdir -p app/src/main/java/ru/vesta/hudbridge
           mkdir -p app/src/main/res/xml
@@ -68,8 +68,8 @@ jobs:
               applicationId "ru.vesta.hudbridge"
               minSdk 24
               targetSdk 33
-              versionCode 42
-              versionName "4.2-CITY-FAST"
+              versionCode 43
+              versionName "4.3-PRO-FIX"
             }
             buildTypes {
               debug {
@@ -87,8 +87,8 @@ jobs:
 
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
-            <string name="app_name">Vesta HUD Bridge v4.2</string>
-            <string name="acc_desc">Быстрый перехват маневров (300 мс), стрелок и знаков Яндекс.Навигатора для проектора Lada Vesta HUD</string>
+            <string name="app_name">Vesta HUD Bridge v4.3</string>
+            <string name="acc_desc">Точный перехват маневров, камер и знаков Яндекс.Навигатора для проектора Lada Vesta HUD</string>
           </resources>
           EOF
 
@@ -106,13 +106,9 @@ jobs:
           cat << 'EOF' > app/src/main/res/xml/usb_device_filter.xml
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
-            <!-- ESP32-S3 Native USB / JTAG / CDC (Espressif 0x303A) -->
             <usb-device vendor-id="12346" />
-            <!-- CH340 / CH341 / CH343 (WCH 0x1A86) -->
             <usb-device vendor-id="6790" />
-            <!-- CP210x (Silicon Labs 0x10C4) -->
             <usb-device vendor-id="4292" />
-            <!-- FT232 (FTDI 0x0403) -->
             <usb-device vendor-id="1027" />
           </resources>
           EOF
@@ -192,7 +188,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 1. HudKeepAliveService.java — Цикл 300 мс + WakeLock + Auto-CLR + Root Watchdog
+          # 1. HudKeepAliveService.java — Цикл 300 мс + WakeLock + Тихий Watchdog
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/HudKeepAliveService.java
           package ru.vesta.hudbridge;
@@ -209,24 +205,19 @@ jobs:
           import java.util.concurrent.ScheduledExecutorService;
           import java.util.concurrent.TimeUnit;
           public class HudKeepAliveService extends Service {
-            private static final String CH_ID = "vesta_hud_keepalive_v42";
+            private static final String CH_ID = "vesta_hud_keepalive_v43";
             private static volatile boolean running = false;
             private ScheduledExecutorService scheduler;
             private PowerManager.WakeLock wakeLock;
             private long lastUsbRetryMs = 0;
-            private long lastRootWatchdogMs = 0;
-            public static boolean isRunning() {
-              return running;
-            }
+            private long lastWatchdogMs = 0;
+            public static boolean isRunning() { return running; }
             public static void ensureStarted(Context ctx) {
               if (running || ctx == null) return;
               try {
                 Intent i = new Intent(ctx, HudKeepAliveService.class);
-                if (Build.VERSION.SDK_INT >= 26) {
-                  ctx.startForegroundService(i);
-                } else {
-                  ctx.startService(i);
-                }
+                if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i);
+                else ctx.startService(i);
               } catch (Throwable ignored) {}
             }
             @Override
@@ -244,7 +235,7 @@ jobs:
                 NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
                 Notification.Builder b;
                 if (Build.VERSION.SDK_INT >= 26) {
-                  NotificationChannel ch = new NotificationChannel(CH_ID, "Vesta HUD USB Мост v4.2", NotificationManager.IMPORTANCE_LOW);
+                  NotificationChannel ch = new NotificationChannel(CH_ID, "Vesta HUD USB Мост v4.3", NotificationManager.IMPORTANCE_LOW);
                   ch.setShowBadge(false);
                   ch.setSound(null, null);
                   if (nm != null) nm.createNotificationChannel(ch);
@@ -253,8 +244,8 @@ jobs:
                   b = new Notification.Builder(this);
                 }
                 Notification notif = b
-                    .setContentTitle("Vesta HUD USB Мост v4.2 активен")
-                    .setContentText("Быстрый опрос Яндекса (300 мс) + анти-сон Teyes")
+                    .setContentTitle("Vesta HUD USB Мост v4.3 активен")
+                    .setContentText("Опрос 300 мс • Без спама Superuser")
                     .setSmallIcon(android.R.drawable.ic_menu_compass)
                     .setOngoing(true)
                     .build();
@@ -273,13 +264,15 @@ jobs:
                 }
                 YandexAccessibilityService.pollScreenNow();
                 YandexNotificationService.pollActiveNow();
+                usb.tickKeepSpeedLimitAlive(this, now);
                 if (UsbSerialManager.shouldSendAutoClear(now)) {
                   UsbSerialManager.clearTurnMemory();
                   usb.sendYandexPayload(this, "CLR", "AUTO");
                 }
-                if (now - lastRootWatchdogMs >= 15000) {
-                  lastRootWatchdogMs = now;
-                  RootAutoEnabler.runWatchdogTick(this);
+                // Тихая проверка каждые 20 сек БЕЗ вызова su (убирает всплывашку Superuser!)
+                if (now - lastWatchdogMs >= 20000) {
+                  lastWatchdogMs = now;
+                  RootAutoEnabler.runSilentWatchdog(this);
                 }
               } catch (Throwable ignored) {}
             }
@@ -292,23 +285,17 @@ jobs:
             @Override
             public void onDestroy() {
               running = false;
-              if (scheduler != null) {
-                try { scheduler.shutdownNow(); } catch (Throwable ignored) {}
-              }
-              if (wakeLock != null && wakeLock.isHeld()) {
-                try { wakeLock.release(); } catch (Throwable ignored) {}
-              }
+              if (scheduler != null) { try { scheduler.shutdownNow(); } catch (Throwable ignored) {} }
+              if (wakeLock != null && wakeLock.isHeld()) { try { wakeLock.release(); } catch (Throwable ignored) {} }
               super.onDestroy();
             }
             @Override
-            public IBinder onBind(Intent intent) {
-              return null;
-            }
+            public IBinder onBind(Intent intent) { return null; }
           }
           EOF
 
           # ------------------------------------------------------------------
-          # 2. RootAutoEnabler.java — Жесткий Root Анти-сон для Teyes CC3 (сохраняет Teyes Gesture)
+          # 2. RootAutoEnabler.java — Однократный ROOT (su), далее тихая работа без тостов!
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/RootAutoEnabler.java
           package ru.vesta.hudbridge;
@@ -321,81 +308,59 @@ jobs:
             private static final String PKG = "ru.vesta.hudbridge";
             private static final String ACC_SVC = PKG + "/ru.vesta.hudbridge.YandexAccessibilityService";
             private static final String NOTIF_SVC = PKG + "/ru.vesta.hudbridge.YandexNotificationService";
-            private static volatile boolean rootGrantedOnce = false;
+            private static volatile boolean rootRanOnce = false;
             private static volatile boolean rootActiveOk = false;
             private static volatile long lastCheckMs = 0;
-            public static boolean isRootActive() {
-              return rootActiveOk;
-            }
+            public static boolean isRootActive() { return rootActiveOk; }
             public static void ensureServicesActive(Context ctx, boolean forceRoot) {
               HudKeepAliveService.ensureStarted(ctx);
               long now = System.currentTimeMillis();
-              if (!forceRoot && (now - lastCheckMs < 5000)) return;
+              if (!forceRoot && (now - lastCheckMs < 8000)) return;
               lastCheckMs = now;
+              boolean fixedSilently = trySilentSettingsRepair(ctx);
+              if (forceRoot) {
+                rootRanOnce = true;
+                new Thread(() -> runRootCommandsOnce(ctx)).start();
+              } else if (!fixedSilently && !rootRanOnce) {
+                rootRanOnce = true;
+                new Thread(() -> runRootCommandsOnce(ctx)).start();
+              }
+            }
+            // Вызывается в фоне каждые 20 сек — НИКОГДА не спамит su!
+            public static void runSilentWatchdog(Context ctx) {
+              try {
+                boolean ok = trySilentSettingsRepair(ctx);
+                if (!ok && !rootRanOnce) {
+                  rootRanOnce = true;
+                  runRootCommandsOnce(ctx);
+                }
+              } catch (Throwable ignored) {}
+            }
+            private static boolean trySilentSettingsRepair(Context ctx) {
               try {
                 ContentResolver cr = ctx.getContentResolver();
                 String curAcc = Settings.Secure.getString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
                 String curNotif = Settings.Secure.getString(cr, "enabled_notification_listeners");
                 boolean accMissing = (curAcc == null || !curAcc.contains(PKG));
                 boolean notifMissing = (curNotif == null || !curNotif.contains(PKG));
-                if (!accMissing && !notifMissing && !forceRoot) {
-                  return;
+                if (!accMissing && !notifMissing) {
+                  return true;
                 }
-                try {
-                  if (accMissing) {
-                    String newAcc = (curAcc == null || curAcc.trim().isEmpty())
-                        ? ACC_SVC : (curAcc + ":" + ACC_SVC);
-                    Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, newAcc);
-                    Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 1);
-                    accMissing = false;
-                  }
-                  if (notifMissing) {
-                    String newNotif = (curNotif == null || curNotif.trim().isEmpty())
-                        ? NOTIF_SVC : (curNotif + ":" + NOTIF_SVC);
-                    Settings.Secure.putString(cr, "enabled_notification_listeners", newNotif);
-                    notifMissing = false;
-                  }
-                } catch (Throwable ignored) {}
-                if (accMissing || notifMissing || !rootGrantedOnce || forceRoot) {
-                  rootGrantedOnce = true;
-                  new Thread(() -> runRootCommands(ctx)).start();
+                if (accMissing) {
+                  String newAcc = (curAcc == null || curAcc.trim().isEmpty()) ? ACC_SVC : (curAcc + ":" + ACC_SVC);
+                  Settings.Secure.putString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, newAcc);
+                  Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 1);
                 }
-              } catch (Throwable ignored) {}
-            }
-            public static void runWatchdogTick(Context ctx) {
-              try {
-                ContentResolver cr = ctx.getContentResolver();
-                String curAcc = Settings.Secure.getString(cr, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
-                String curNotif = Settings.Secure.getString(cr, "enabled_notification_listeners");
-                boolean needFull = (curAcc == null || !curAcc.contains(PKG)
-                    || curNotif == null || !curNotif.contains(PKG)
-                    || !YandexAccessibilityService.isAlive()
-                    || !YandexNotificationService.isAlive());
-                if (needFull) {
-                  runRootCommands(ctx);
-                } else {
-                  runLightweightKeepAwake();
+                if (notifMissing) {
+                  String newNotif = (curNotif == null || curNotif.trim().isEmpty()) ? NOTIF_SVC : (curNotif + ":" + NOTIF_SVC);
+                  Settings.Secure.putString(cr, "enabled_notification_listeners", newNotif);
                 }
-              } catch (Throwable ignored) {}
-            }
-            private static void runLightweightKeepAwake() {
-              Process p = null;
-              try {
-                p = Runtime.getRuntime().exec("su");
-                DataOutputStream os = new DataOutputStream(p.getOutputStream());
-                os.writeBytes("am set-inactive " + PKG + " false\n");
-                os.writeBytes("am set-standby-bucket " + PKG + " active\n");
-                os.writeBytes("exit\n");
-                os.flush();
-                if (p.waitFor(3, TimeUnit.SECONDS) && p.exitValue() == 0) {
-                  rootActiveOk = true;
-                }
+                return true;
               } catch (Throwable ignored) {
-              } finally {
-                if (p != null) { try { p.destroy(); } catch (Throwable ignored) {} }
+                return false;
               }
             }
-            private static void runRootCommands(Context ctx) {
+            private static void runRootCommandsOnce(Context ctx) {
               Process p = null;
               try {
                 ContentResolver cr = ctx.getContentResolver();
@@ -424,7 +389,7 @@ jobs:
                 os.flush();
                 if (p.waitFor(4, TimeUnit.SECONDS) && p.exitValue() == 0) {
                   rootActiveOk = true;
-                  UsbSerialManager.getInstance().addLog("[ROOT] Службы и анти-сон Teyes CC3 активны");
+                  UsbSerialManager.getInstance().addLog("[ROOT] Однократно активировано (без спама)");
                 }
               } catch (Throwable ignored) {
               } finally {
@@ -435,7 +400,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 3. ArrowBitmapClassifier.java — Проверенный классификатор иконок ДЕНЬ + НОЧЬ
+          # 3. ArrowBitmapClassifier.java — Исправлено "Направо/Налево" vs "Правее/Левее" + Кольцо
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/ArrowBitmapClassifier.java
           package ru.vesta.hudbridge;
@@ -444,13 +409,33 @@ jobs:
           import android.graphics.Color;
           import android.graphics.drawable.BitmapDrawable;
           import android.graphics.drawable.Drawable;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
           public class ArrowBitmapClassifier {
+            private static final Pattern EXIT_ID_PAT = Pattern.compile("(?:exit|roundabout|ring|out)[_-]?([1-4])\\b");
+            private static final Pattern EXIT_TXT_PAT = Pattern.compile("(?:([1-4])(?:-?й|-?ый)?\\s*съезд|съезд\\s*(?:№\\s*)?([1-4])|([1-4])\\s*выход)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+            public static String extractRoundaboutExit(String text, String resName) {
+              if (text != null && !text.isEmpty()) {
+                Matcher m = EXIT_TXT_PAT.matcher(text);
+                if (m.find()) {
+                  String d = (m.group(1) != null) ? m.group(1) : ((m.group(2) != null) ? m.group(2) : m.group(3));
+                  if (d != null) return "Кольцо_" + d;
+                }
+              }
+              if (resName != null && !resName.isEmpty()) {
+                Matcher m = EXIT_ID_PAT.matcher(resName.toLowerCase());
+                if (m.find()) return "Кольцо_" + m.group(1);
+              }
+              return "Кольцо_0";
+            }
             public static String classifyResourceName(String name) {
               if (name == null || name.isEmpty()) return "";
               String s = name.toLowerCase();
               if (s.contains("finish") || s.contains("arrived") || s.contains("flag")) return "Почти на месте";
               if (s.contains("uturn") || s.contains("u_turn") || s.contains("reverse") || s.contains("turn_back")) return "Разворот налево";
-              if (s.contains("roundabout") || s.contains("rotary") || s.contains("circle") || s.contains("ring")) return "Кольцо";
+              if (s.contains("roundabout") || s.contains("rotary") || s.contains("circle") || s.contains("ring")) {
+                return extractRoundaboutExit("", s);
+              }
               if (s.contains("hard_left") || s.contains("sharp_left") || s.contains("back_left")) return "Круто налево";
               if (s.contains("hard_right") || s.contains("sharp_right") || s.contains("back_right")) return "Круто направо";
               if (s.contains("exit_left") || s.contains("fork_left") || s.contains("ramp_left")) return "Съезд налево";
@@ -501,9 +486,7 @@ jobs:
                     int px = bmp.getPixel(x, y);
                     int a = Color.alpha(px);
                     int l = lum(px);
-                    boolean isArrow = (bgAlpha < 80)
-                        ? (a > 120)
-                        : (a > 120 && Math.abs(l - bgLum) > 55);
+                    boolean isArrow = (bgAlpha < 80) ? (a > 120) : (a > 120 && Math.abs(l - bgLum) > 55);
                     if (isArrow) {
                       fg[y][x] = true;
                       totalFg++;
@@ -516,12 +499,14 @@ jobs:
                 }
                 int spanX = maxX - minX;
                 int spanY = maxY - minY;
-                if (totalFg < 28 || totalFg > 2400 || spanX < 7 || spanY < 10) return "";
+                if (totalFg < 28 || totalFg > 2500 || spanX < 7 || spanY < 10) return "";
                 int topLeftArch = 0, topRightArch = 0, topMidArch = 0;
-                int leftDeep = 0, rightDeep = 0, midHole = 0;
+                int leftDeep = 0, rightDeep = 0, midHole = 0, ringBand = 0;
                 int botRight = 0, botLeft = 0;
-                double stemXSum = 0;
-                int stemCount = 0;
+                double stemXSum = 0; int stemCount = 0;
+                double cx = (minX + maxX) * 0.5;
+                double cy = (minY + maxY) * 0.5;
+                double rad = Math.min(spanX, spanY) * 0.5;
                 for (int y = minY; y <= maxY; y++) {
                   double normY = (y - minY) * 100.0 / Math.max(1, spanY);
                   for (int x = minX; x <= maxX; x++) {
@@ -532,20 +517,28 @@ jobs:
                     if (normY < 24.0 && normX >= 32.0 && normX <= 68.0) topMidArch++;
                     if (normX < 38.0 && normY > 66.0) leftDeep++;
                     if (normX > 62.0 && normY > 66.0) rightDeep++;
-                    if (normX > 38.0 && normX < 62.0 && normY > 38.0 && normY < 85.0) midHole++;
-                    if (normY > 88.0 && normX > 55.0) botRight++;
-                    if (normY > 88.0 && normX < 45.0) botLeft++;
-                    if (normY >= 82.0) {
-                      stemXSum += x;
-                      stemCount++;
-                    }
+                    if (normX > 38.0 && normX < 62.0 && normY > 38.0 && normY < 72.0) midHole++;
+                    if (normY > 86.0 && normX > 55.0) botRight++;
+                    if (normY > 86.0 && normX < 45.0) botLeft++;
+                    if (normY >= 80.0) { stemXSum += x; stemCount++; }
+                    double dNorm = Math.hypot(x - cx, y - cy) / Math.max(1.0, rad);
+                    if (dNorm >= 0.55 && dNorm <= 1.05) ringBand++;
                   }
                 }
+                double aspect = (double) spanX / (double) spanY;
+                // 1. Детектор кольца (замкнутый контур с пустым центром)
+                if (aspect > 0.78 && aspect < 1.25 && midHole < totalFg * 0.06 && ringBand > totalFg * 0.58
+                    && topMidArch > 6 && (botLeft > 4 && botRight > 4)) {
+                  return "Кольцо_0";
+                }
+                // 2. Детектор разворота
                 if (topLeftArch > 6 && topRightArch > 6 && topMidArch > 8
                     && leftDeep > 12 && rightDeep > 12 && midHole < totalFg * 0.07) {
                   return (botRight >= botLeft) ? "Разворот налево" : "Разворот направо";
                 }
-                double stemX = (stemCount > 4) ? (stemXSum / stemCount) : ((minX + maxX) / 2.0);
+                // 3. Точное отличие 90-градусного поворота (Налево/Направо) от плавного (Левее/Правее)
+                double stemX = (stemCount > 4) ? (stemXSum / stemCount) : cx;
+                double stemNormX = (stemX - minX) * 100.0 / Math.max(1, spanX);
                 int leftOfStem = 0, rightOfStem = 0;
                 double leftTipYSum = 0; int leftTipCnt = 0;
                 double rightTipYSum = 0; int rightTipCnt = 0;
@@ -555,30 +548,23 @@ jobs:
                     if (!fg[y][x]) continue;
                     if (x < stemX - spanX * 0.14) leftOfStem++;
                     if (x > stemX + spanX * 0.14) rightOfStem++;
-                    if (x <= minX + Math.max(2, (int)(spanX * 0.12))) {
-                      leftTipYSum += normY; leftTipCnt++;
-                    }
-                    if (x >= maxX - Math.max(2, (int)(spanX * 0.12))) {
-                      rightTipYSum += normY; rightTipCnt++;
-                    }
+                    if (x <= minX + Math.max(2, (int)(spanX * 0.12))) { leftTipYSum += normY; leftTipCnt++; }
+                    if (x >= maxX - Math.max(2, (int)(spanX * 0.12))) { rightTipYSum += normY; rightTipCnt++; }
                   }
                 }
-                if (leftOfStem > rightOfStem * 1.45 && leftTipCnt > 0) {
+                if (leftOfStem > rightOfStem * 1.35 && leftTipCnt > 0) {
                   double tipY = leftTipYSum / leftTipCnt;
-                  if (tipY > 54.0) return "Круто налево";
-                  if (tipY < 24.0) return "Левее";
+                  if (tipY > 56.0) return "Круто налево";
+                  if (tipY < 16.0 && aspect < 0.78 && stemNormX < 62.0) return "Левее";
                   return "Налево";
                 }
-                if (rightOfStem > leftOfStem * 1.45 && rightTipCnt > 0) {
+                if (rightOfStem > leftOfStem * 1.35 && rightTipCnt > 0) {
                   double tipY = rightTipYSum / rightTipCnt;
-                  if (tipY > 54.0) return "Круто направо";
-                  if (tipY < 24.0) return "Правее";
+                  if (tipY > 56.0) return "Круто направо";
+                  if (tipY < 16.0 && aspect < 0.78 && stemNormX > 38.0) return "Правее";
                   return "Направо";
                 }
-                double aspect = (double) spanX / (double) spanY;
-                if (aspect < 0.72) {
-                  return "Прямо";
-                }
+                if (aspect < 0.75) return "Прямо";
               } catch (Throwable ignored) {}
               return "";
             }
@@ -589,7 +575,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 4. UsbSerialManager.java — Мгновенная городская отправка + Умная память + Auto-CLR
+          # 4. UsbSerialManager.java — Раздельные каналы: Маршрут / Камера / Знак ПДД
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/UsbSerialManager.java
           package ru.vesta.hudbridge;
@@ -619,10 +605,16 @@ jobs:
             private long lastNavSendTime = 0;
             private String lastSignPacket = "";
             private long lastSignSendTime = 0;
+            private String lastCamPacket = "";
+            private long lastCamSendTime = 0;
             private long lastPermReqMs = 0;
             private String lastStatus = "Ожидание USB ESP32-S3...";
             private static volatile String activeTurnMemory = "";
             private static volatile long activeTurnTime = 0;
+            private static volatile String latestNotifTurn = "";
+            private static volatile long latestNotifTurnMs = 0;
+            private static volatile int cachedSpeedLimit = 0;
+            private static volatile long cachedSpeedLimitMs = 0;
             private static volatile int lastDistMeters = -1;
             private static volatile long lastRouteSeenMs = 0;
             private static volatile boolean routeActiveSent = false;
@@ -632,9 +624,7 @@ jobs:
               if (instance == null) instance = new UsbSerialManager();
               return instance;
             }
-            public synchronized boolean isConnected() {
-              return (connection != null && epOut != null);
-            }
+            public synchronized boolean isConnected() { return (connection != null && epOut != null); }
             public synchronized void addLog(String msg) {
               String ts = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
               debugLines.addFirst(ts + " " + msg);
@@ -643,19 +633,22 @@ jobs:
             public synchronized String getDebugLog() {
               if (debugLines.isEmpty()) return "Ожидание событий от Яндекс.Навигатора...";
               StringBuilder sb = new StringBuilder();
-              for (String line : debugLines) {
-                sb.append(line).append("\n");
-              }
+              for (String line : debugLines) sb.append(line).append("\n");
               return sb.toString().trim();
             }
-            public String getLastStatus() {
-              return lastStatus;
+            public String getLastStatus() { return lastStatus; }
+            public static int getCachedSpeedLimit() { return cachedSpeedLimit; }
+            public static void markYandexForeground() { lastForegroundYandexMs = System.currentTimeMillis(); }
+            public static boolean isYandexRecentlyForeground() { return (System.currentTimeMillis() - lastForegroundYandexMs) < 3500; }
+            public static void markNotifTurn(String turn) {
+              if (turn != null && !turn.isEmpty()) {
+                latestNotifTurn = turn;
+                latestNotifTurnMs = System.currentTimeMillis();
+              }
             }
-            public static void markYandexForeground() {
-              lastForegroundYandexMs = System.currentTimeMillis();
-            }
-            public static boolean isYandexRecentlyForeground() {
-              return (System.currentTimeMillis() - lastForegroundYandexMs) < 3500;
+            public static String getRecentNotifTurn() {
+              if (System.currentTimeMillis() - latestNotifTurnMs < 5000) return latestNotifTurn;
+              return "";
             }
             public static void markRouteSeen(int distMeters) {
               long now = System.currentTimeMillis();
@@ -663,9 +656,7 @@ jobs:
                 activeTurnMemory = "";
                 activeTurnTime = 0;
               }
-              if (distMeters > 0) {
-                lastDistMeters = distMeters;
-              }
+              if (distMeters > 0) lastDistMeters = distMeters;
               lastRouteSeenMs = now;
               routeActiveSent = true;
             }
@@ -675,6 +666,8 @@ jobs:
             public static void clearTurnMemory() {
               activeTurnMemory = "";
               activeTurnTime = 0;
+              latestNotifTurn = "";
+              latestNotifTurnMs = 0;
               lastDistMeters = -1;
               routeActiveSent = false;
             }
@@ -684,10 +677,13 @@ jobs:
               activeTurnTime = System.currentTimeMillis();
             }
             public static String getRememberedTurn() {
-              if (System.currentTimeMillis() - activeTurnTime < 12000) {
-                return activeTurnMemory;
-              }
+              if (System.currentTimeMillis() - activeTurnTime < 12000) return activeTurnMemory;
               return "";
+            }
+            public static boolean isCameraText(String low) {
+              if (low == null) return false;
+              return low.contains("камер") || low.contains("радар") || low.contains("контрол")
+                  || low.contains("полос") || low.contains("обочин") || low.contains("разметк");
             }
             public static int parseMetersFromDistStr(String distPart) {
               if (distPart == null || distPart.isEmpty()) return -1;
@@ -696,13 +692,9 @@ jobs:
                 String num = low.replaceAll("[^0-9.,]", "").replace(',', '.');
                 if (num.isEmpty()) return -1;
                 float val = Float.parseFloat(num);
-                if (low.contains("км") || low.contains("km")) {
-                  return Math.round(val * 1000.0f);
-                }
+                if (low.contains("км") || low.contains("km")) return Math.round(val * 1000.0f);
                 return Math.round(val);
-              } catch (Throwable ignored) {
-                return -1;
-              }
+              } catch (Throwable ignored) { return -1; }
             }
             public static boolean isAllowedEspSerialDevice(UsbDevice dev) {
               if (dev == null) return false;
@@ -714,6 +706,32 @@ jobs:
               lastStatus = "USB отключен (ожидание переподключения)";
               addLog("[USB] Устройство отключено");
             }
+            public synchronized void updateSpeedLimit(Context ctx, int limit, String srcTag) {
+              if (limit < 20 || limit > 130 || (limit % 10 != 0)) return;
+              cachedSpeedLimit = limit;
+              cachedSpeedLimitMs = System.currentTimeMillis();
+              sendYandexPayload(ctx, "0 Ограничение " + limit, srcTag);
+            }
+            public synchronized void sendCameraAlert(Context ctx, int distM, int limit, String srcTag) {
+              if (distM <= 0 && limit <= 0) return;
+              if (limit >= 20 && limit <= 130 && (limit % 10 == 0)) {
+                cachedSpeedLimit = limit;
+                cachedSpeedLimitMs = System.currentTimeMillis();
+              }
+              int sendLim = (limit >= 20 && limit <= 130) ? limit : cachedSpeedLimit;
+              String body = (distM > 0)
+                  ? (distM + " м Камера " + (sendLim > 0 ? sendLim : 0))
+                  : ("200 м Камера " + (sendLim > 0 ? sendLim : 0));
+              sendYandexPayload(ctx, body, srcTag);
+            }
+            // Подпитываем знак ПДД в ESP32, пока Яндекс свернут (чтобы левый знак не гас!)
+            public synchronized void tickKeepSpeedLimitAlive(Context ctx, long now) {
+              if (cachedSpeedLimit >= 20 && routeActiveSent && (now - cachedSpeedLimitMs < 90000L)) {
+                if (now - lastSignSendTime >= 4500L) {
+                  sendYandexPayload(ctx, "0 Ограничение " + cachedSpeedLimit, "SIGN_K");
+                }
+              }
+            }
             public synchronized void sendYandexPayload(Context ctx, String rawBody, String srcTag) {
               if (rawBody == null) return;
               String clean = rawBody.trim().replace(";", "").replace("\r", " ").replace("\n", " ");
@@ -722,6 +740,7 @@ jobs:
               boolean isClear = "CLR".equalsIgnoreCase(clean);
               if (isClear) {
                 clearTurnMemory();
+                cachedSpeedLimit = 0;
               }
               String low = clean.toLowerCase();
               if (!isClear && (low.contains("уведомлять") || low.contains("превышен") || low.contains("нештраф")
@@ -730,16 +749,19 @@ jobs:
                 return;
               }
               boolean isSign = clean.startsWith("0 Ограничение");
+              boolean isCam  = low.contains("камера");
               String packet = "$Y," + clean + ";\n";
               long now = System.currentTimeMillis();
               if (isSign) {
-                if (packet.equals(lastSignPacket) && (now - lastSignSendTime < 2500)) return;
+                if (packet.equals(lastSignPacket) && (now - lastSignSendTime < 3000)) return;
+              } else if (isCam) {
+                if (packet.equals(lastCamPacket) && (now - lastCamSendTime < 800)) return;
               } else if (isClear) {
                 if (packet.equals(lastNavPacket) && (now - lastNavSendTime < 2000)) return;
               } else {
                 if (packet.equals(lastNavPacket) && (now - lastNavSendTime < 800)) return;
               }
-              addLog("[" + srcTag + "] " + clean);
+              if (!"SIGN_K".equals(srcTag)) addLog("[" + srcTag + "] " + clean);
               if (!ensureConnected(ctx)) {
                 lastStatus = "ESP32 не найдена по USB (проверь кабель)";
                 return;
@@ -749,14 +771,14 @@ jobs:
                 int res = connection.bulkTransfer(epOut, bytes, bytes.length, 250);
                 if (res >= 0) {
                   if (isSign) {
-                    lastSignPacket = packet;
-                    lastSignSendTime = now;
+                    lastSignPacket = packet; lastSignSendTime = now;
+                  } else if (isCam) {
+                    lastCamPacket = packet; lastCamSendTime = now;
                   } else {
-                    lastNavPacket = packet;
-                    lastNavSendTime = now;
+                    lastNavPacket = packet; lastNavSendTime = now;
                     if (isClear) {
-                      lastSignPacket = "";
-                      lastSignSendTime = 0;
+                      lastSignPacket = ""; lastSignSendTime = 0;
+                      lastCamPacket = ""; lastCamSendTime = 0;
                     }
                   }
                   lastStatus = String.format(Locale.US, "USB OK (%04X:%04X) • %s", connectedVid, connectedPid, clean);
@@ -793,9 +815,7 @@ jobs:
                     }
                     continue;
                   }
-                  if (openDevice(manager, dev)) {
-                    return true;
-                  }
+                  if (openDevice(manager, dev)) return true;
                 }
               } catch (Throwable ignored) {}
               return false;
@@ -856,19 +876,14 @@ jobs:
               } catch (Throwable ignored) {}
             }
             private void closeConnection() {
-              try {
-                if (connection != null) connection.close();
-              } catch (Throwable ignored) {}
-              connection = null;
-              epOut = null;
-              connectedVid = 0;
-              connectedPid = 0;
+              try { if (connection != null) connection.close(); } catch (Throwable ignored) {}
+              connection = null; epOut = null; connectedVid = 0; connectedPid = 0;
             }
           }
           EOF
 
           # ------------------------------------------------------------------
-          # 5. YandexNotificationService.java — Перехват шторки + опрос 300 мс + быстрый CLR
+          # 5. YandexNotificationService.java — Приоритет ТЕКСТ > RES_ID > BITMAP + Отдельный канал КАМЕР
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/YandexNotificationService.java
           package ru.vesta.hudbridge;
@@ -896,11 +911,9 @@ jobs:
             private static volatile YandexNotificationService instance;
             private static volatile boolean alive = false;
             private static final Pattern DIST_PAT = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)(?![а-яА-ЯёЁa-zA-Z])", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
-            private static final Pattern CAM_PAT  = Pattern.compile("(?:камер|радар|огранич)[^\\d]{0,15}(20|30|40|50|60|70|80|90|100|110|120|130)(?!\\d)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+            private static final Pattern CAM_LIM_PAT = Pattern.compile("(?:камер|радар|огранич|скорост)[^\\d]{0,16}(20|30|40|50|60|70|80|90|100|110|120|130)(?!\\d)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private int lastRouteNotifId = -999999;
-            public static boolean isAlive() {
-              return alive;
-            }
+            public static boolean isAlive() { return alive; }
             @Override
             public void onListenerConnected() {
               super.onListenerConnected();
@@ -944,8 +957,8 @@ jobs:
               Notification n = sbn.getNotification();
               if (n == null) return;
               List<String> texts = new ArrayList<>();
-              String detectedTurn = "";
-              String srcTag = "NOTIF";
+              String[] resIdHolder = new String[]{""};
+              String[] bmpHolder   = new String[]{""};
               Bundle ex = n.extras;
               if (ex != null) {
                 addText(texts, ex.getCharSequence(Notification.EXTRA_TITLE));
@@ -955,42 +968,34 @@ jobs:
               }
               RemoteViews rv = (n.bigContentView != null) ? n.bigContentView : n.contentView;
               if (rv != null) {
-                String fromInflated = inflateAndScanRemoteViews(pkg, rv, texts);
-                if (!fromInflated.isEmpty()) {
-                  detectedTurn = fromInflated;
-                  srcTag = "BITMAP";
-                }
-                if (detectedTurn.isEmpty()) {
-                  String fromAct = inspectRemoteViewsActions(pkg, rv);
-                  if (!fromAct.isEmpty()) {
-                    detectedTurn = fromAct;
-                    srcTag = "RES_ID";
-                  }
+                inflateAndScanRemoteViews(pkg, rv, texts, resIdHolder, bmpHolder);
+                if (resIdHolder[0].isEmpty() && bmpHolder[0].isEmpty()) {
+                  inspectRemoteViewsActions(pkg, rv, resIdHolder, bmpHolder);
                 }
               }
-              if (detectedTurn.isEmpty()) {
+              if (bmpHolder[0].isEmpty()) {
                 try {
                   Icon lg = n.getLargeIcon();
                   if (lg != null) {
-                    Drawable d = lg.loadDrawable(this);
-                    String fromIcon = ArrowBitmapClassifier.classifyDrawable(d);
-                    if (!fromIcon.isEmpty()) {
-                      detectedTurn = fromIcon;
-                      srcTag = "ICON";
-                    }
+                    String fromIcon = ArrowBitmapClassifier.classifyDrawable(lg.loadDrawable(this));
+                    if (!fromIcon.isEmpty()) bmpHolder[0] = fromIcon;
                   }
                 } catch (Throwable ignored) {}
               }
+              StringBuilder allJoined = new StringBuilder();
               String distPart = "";
               String streetPart = "";
               String textTurn = "";
-              String camLimit = "";
+              int camLimitInt = 0;
+              boolean hasCameraWord = false;
               for (String t : texts) {
                 String low = t.toLowerCase();
                 if (isEtaOrSystemLine(low)) continue;
-                Matcher cm = CAM_PAT.matcher(t);
-                if (cm.find() && camLimit.isEmpty()) {
-                  camLimit = cm.group(1);
+                allJoined.append(' ').append(t);
+                if (UsbSerialManager.isCameraText(low)) hasCameraWord = true;
+                Matcher cm = CAM_LIM_PAT.matcher(t);
+                if (cm.find() && camLimitInt == 0) {
+                  try { camLimitInt = Integer.parseInt(cm.group(1)); } catch (Throwable ignored) {}
                 }
                 String turnInT = extractTurnWordFromText(t);
                 if (!turnInT.isEmpty() && textTurn.isEmpty()) textTurn = turnInT;
@@ -1001,13 +1006,38 @@ jobs:
                   if (after.length() >= 2 && streetPart.isEmpty() && !isEtaOrSystemLine(after.toLowerCase())) {
                     streetPart = after;
                   }
-                } else if (streetPart.isEmpty() && t.length() >= 2) {
+                } else if (streetPart.isEmpty() && t.length() >= 2 && !UsbSerialManager.isCameraText(low)) {
                   streetPart = t;
                 }
               }
-              if (detectedTurn.isEmpty() && !textTurn.isEmpty()) {
+              // 1. ЖЕСТКО ОТДЕЛЯЕМ КАМЕРЫ ОТ МАНЕВРОВ! Камера уходит строго в левый блок и НЕ затирает стрелку!
+              if (hasCameraWord && textTurn.isEmpty()) {
+                int camDistM = UsbSerialManager.parseMetersFromDistStr(distPart);
+                UsbSerialManager.getInstance().sendCameraAlert(this, camDistM, camLimitInt, "CAM");
+                return;
+              }
+              if (camLimitInt > 0) {
+                UsbSerialManager.getInstance().updateSpeedLimit(this, camLimitInt, "SIGN");
+              }
+              // 2. ПРАВИЛЬНЫЙ ПРИОРИТЕТ СТРЕЛКИ: 1) Русский текст -> 2) RES_ID -> 3) BITMAP!
+              String detectedTurn = "";
+              String srcTag = "NOTIF";
+              if (!textTurn.isEmpty()) {
                 detectedTurn = textTurn;
                 srcTag = "TEXT";
+              } else if (!resIdHolder[0].isEmpty()) {
+                detectedTurn = resIdHolder[0];
+                srcTag = "RES_ID";
+              } else if (!bmpHolder[0].isEmpty()) {
+                detectedTurn = bmpHolder[0];
+                srcTag = "BITMAP";
+              }
+              // Уточняем номер съезда кольца ТОЛЬКО из явных слов ("2-й съезд"), а не из метров!
+              if (detectedTurn.startsWith("Кольцо")) {
+                detectedTurn = ArrowBitmapClassifier.extractRoundaboutExit(allJoined.toString(), resIdHolder[0]);
+              }
+              if (!detectedTurn.isEmpty()) {
+                UsbSerialManager.markNotifTurn(detectedTurn);
               }
               boolean isFinish = "Почти на месте".equals(detectedTurn);
               if (!distPart.isEmpty() || isFinish) {
@@ -1021,16 +1051,12 @@ jobs:
                 }
                 lastRouteNotifId = sbn.getId();
                 StringBuilder sb = new StringBuilder();
-                if (!distPart.isEmpty()) sb.append(distPart);
-                else sb.append("50 м");
+                sb.append(!distPart.isEmpty() ? distPart : "50 м");
                 if (!detectedTurn.isEmpty()) sb.append(" ").append(detectedTurn);
                 if (!streetPart.isEmpty() && !streetPart.equalsIgnoreCase(detectedTurn)) {
                   sb.append(" ").append(streetPart);
                 }
                 UsbSerialManager.getInstance().sendYandexPayload(this, sb.toString(), srcTag);
-              }
-              if (!camLimit.isEmpty()) {
-                UsbSerialManager.getInstance().sendYandexPayload(this, "0 Ограничение " + camLimit, "CAM");
               }
             }
             @Override
@@ -1048,12 +1074,10 @@ jobs:
               if (low.contains("уведомлять") || low.contains("настройк")) return true;
               return false;
             }
-            private String inflateAndScanRemoteViews(String pkg, RemoteViews rv, List<String> outTexts) {
+            private void inflateAndScanRemoteViews(String pkg, RemoteViews rv, List<String> outTexts, String[] resIdHolder, String[] bmpHolder) {
               View root = null;
               Resources pkgRes = null;
-              try {
-                pkgRes = getPackageManager().getResourcesForApplication(pkg);
-              } catch (Throwable ignored) {}
+              try { pkgRes = getPackageManager().getResourcesForApplication(pkg); } catch (Throwable ignored) {}
               try {
                 FrameLayout parent = new FrameLayout(this);
                 root = rv.apply(this, parent);
@@ -1066,77 +1090,73 @@ jobs:
                   root = rv.apply(pkgCtx, parent);
                 } catch (Throwable ignored) {}
               }
-              return (root != null) ? scanViewHierarchy(pkgRes, root, outTexts) : "";
+              if (root != null) scanViewHierarchy(pkgRes, root, outTexts, resIdHolder, bmpHolder);
             }
-            private String inspectRemoteViewsActions(String pkg, RemoteViews rv) {
+            private void inspectRemoteViewsActions(String pkg, RemoteViews rv, String[] resIdHolder, String[] bmpHolder) {
               try {
                 Resources res = getPackageManager().getResourcesForApplication(pkg);
                 Field actionsField = RemoteViews.class.getDeclaredField("mActions");
                 actionsField.setAccessible(true);
                 ArrayList<?> actions = (ArrayList<?>) actionsField.get(rv);
-                if (actions == null) return "";
+                if (actions == null) return;
                 for (Object act : actions) {
                   for (Field f : act.getClass().getDeclaredFields()) {
                     f.setAccessible(true);
                     Object val = f.get(act);
-                    if (val instanceof Integer) {
+                    if (val instanceof Integer && resIdHolder[0].isEmpty()) {
                       int id = (Integer) val;
                       if ((id >>> 24) == 0x7f) {
                         try {
                           String entry = res.getResourceEntryName(id);
                           String turn = ArrowBitmapClassifier.classifyResourceName(entry);
-                          if (!turn.isEmpty()) return turn;
+                          if (!turn.isEmpty()) resIdHolder[0] = turn;
                         } catch (Throwable ignored) {}
                       }
-                    } else if (val instanceof Bitmap) {
+                    } else if (val instanceof Bitmap && bmpHolder[0].isEmpty()) {
                       Bitmap src = (Bitmap) val;
                       if (src.getWidth() >= 16 && src.getHeight() >= 16) {
                         Bitmap bmp = Bitmap.createScaledBitmap(src, 64, 64, true);
                         String turn = ArrowBitmapClassifier.classifyBitmap64(bmp);
-                        if (!turn.isEmpty()) return turn;
+                        if (!turn.isEmpty()) bmpHolder[0] = turn;
                       }
                     }
                   }
                 }
               } catch (Throwable ignored) {}
-              return "";
             }
-            private String scanViewHierarchy(Resources res, View v, List<String> outTexts) {
-              if (v == null) return "";
-              String foundTurn = "";
+            private void scanViewHierarchy(Resources res, View v, List<String> outTexts, String[] resIdHolder, String[] bmpHolder) {
+              if (v == null) return;
               if (v.getContentDescription() != null) {
                 String cd = v.getContentDescription().toString().trim();
                 addText(outTexts, cd);
-                String t = extractTurnWordFromText(cd);
-                if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cd);
-                if (!t.isEmpty()) foundTurn = t;
+                if (resIdHolder[0].isEmpty()) {
+                  String t = extractTurnWordFromText(cd);
+                  if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cd);
+                  if (!t.isEmpty()) resIdHolder[0] = t;
+                }
               }
-              if (v.getId() != View.NO_ID && res != null) {
+              if (v.getId() != View.NO_ID && res != null && resIdHolder[0].isEmpty()) {
                 try {
                   String idName = res.getResourceEntryName(v.getId());
                   String t = ArrowBitmapClassifier.classifyResourceName(idName);
-                  if (!t.isEmpty() && foundTurn.isEmpty()) foundTurn = t;
+                  if (!t.isEmpty()) resIdHolder[0] = t;
                 } catch (Throwable ignored) {}
               }
               if (v instanceof TextView) {
                 addText(outTexts, ((TextView) v).getText());
-              } else if (v instanceof ImageView && foundTurn.isEmpty()) {
+              } else if (v instanceof ImageView && bmpHolder[0].isEmpty()) {
                 ImageView iv = (ImageView) v;
                 if (iv.getDrawable() != null) {
                   String t = ArrowBitmapClassifier.classifyDrawable(iv.getDrawable());
-                  if (!t.isEmpty()) foundTurn = t;
+                  if (!t.isEmpty()) bmpHolder[0] = t;
                 }
               }
               if (v instanceof ViewGroup) {
                 ViewGroup vg = (ViewGroup) v;
                 for (int i = 0; i < vg.getChildCount(); i++) {
-                  String childTurn = scanViewHierarchy(res, vg.getChildAt(i), outTexts);
-                  if (foundTurn.isEmpty() && !childTurn.isEmpty()) {
-                    foundTurn = childTurn;
-                  }
+                  scanViewHierarchy(res, vg.getChildAt(i), outTexts, resIdHolder, bmpHolder);
                 }
               }
-              return foundTurn;
             }
             private void addText(List<String> list, CharSequence cs) {
               if (cs == null) return;
@@ -1147,16 +1167,20 @@ jobs:
               if (s == null) return "";
               String low = s.toLowerCase();
               if (low.contains("почти на месте") || low.contains("прибыли") || low.contains("финиш")) return "Почти на месте";
+              if (low.contains("кольц") || low.contains("кругов") || low.contains("съезд")) {
+                if (low.contains("съезд налево")) return "Съезд налево";
+                if (low.contains("съезд направо")) return "Съезд направо";
+                return ArrowBitmapClassifier.extractRoundaboutExit(s, "");
+              }
               if (low.contains("разворот") || low.contains("разверн")) return "Разворот налево";
               if (low.contains("круто налево") || low.contains("резко налево")) return "Круто налево";
               if (low.contains("круто направо") || low.contains("резко направо")) return "Круто направо";
-              if (low.contains("съезд налево") || low.contains("развилке левее")) return "Съезд налево";
-              if (low.contains("съезд направо") || low.contains("развилке правее")) return "Съезд направо";
+              if (low.contains("развилке левее")) return "Съезд налево";
+              if (low.contains("развилке правее")) return "Съезд направо";
               if (low.contains("левее") || low.contains("плавно налево")) return "Левее";
               if (low.contains("правее") || low.contains("плавно направо")) return "Правее";
               if (low.contains("налево") || low.contains("влево")) return "Налево";
               if (low.contains("направо") || low.contains("вправо")) return "Направо";
-              if (low.contains("кольц") || low.contains("кругов")) return "Кольцо";
               if (low.contains("прямо")) return "Прямо";
               return "";
             }
@@ -1164,11 +1188,13 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 6. YandexAccessibilityService.java — Быстрый опрос 140/300 мс + авто-сброс
+          # 6. YandexAccessibilityService.java — ФИЛЬТР ПО КООРДИНАТАМ (только верхняя карточка, игнор низа!)
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/YandexAccessibilityService.java
           package ru.vesta.hudbridge;
           import android.accessibilityservice.AccessibilityService;
+          import android.graphics.Rect;
+          import android.util.DisplayMetrics;
           import android.view.accessibility.AccessibilityEvent;
           import android.view.accessibility.AccessibilityNodeInfo;
           import android.view.accessibility.AccessibilityWindowInfo;
@@ -1181,10 +1207,15 @@ jobs:
             private static volatile boolean alive = false;
             private static final Pattern DIST_PAT = Pattern.compile("^(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)$", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private static final Pattern INLINE_DIST = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)(?![а-яА-ЯёЁa-zA-Z])", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+            private static final Pattern CAM_LIM_PAT = Pattern.compile("(?:камер|радар|огранич)[^\\d]{0,14}(20|30|40|50|60|70|80|90|100|110|120|130)(?!\\d)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private volatile long lastScanMs = 0;
-            public static boolean isAlive() {
-              return alive;
+            private static final class NodeItem {
+              String text;
+              String idLow;
+              Rect rect;
+              NodeItem(String t, String id, Rect r) { text = t; idLow = id; rect = r; }
             }
+            public static boolean isAlive() { return alive; }
             @Override
             protected void onServiceConnected() {
               super.onServiceConnected();
@@ -1213,10 +1244,16 @@ jobs:
             }
             private void scanNow() {
               lastScanMs = System.currentTimeMillis();
-              RootAutoEnabler.ensureServicesActive(this, false);
-              List<String> nodes = new ArrayList<>();
+              int screenH = 720;
+              try {
+                DisplayMetrics dm = getResources().getDisplayMetrics();
+                if (dm != null && dm.heightPixels > 200) screenH = dm.heightPixels;
+              } catch (Throwable ignored) {}
+              // Отсекаем нижнюю панель ETA (общий километраж и время прибытия)!
+              int maxManeuverY = (int) (screenH * 0.62f);
+              List<NodeItem> items = new ArrayList<>();
               int[] speedLimHolder = new int[]{0};
-              String detectedTurn = "";
+              String[] turnHolder = new String[]{""};
               boolean yandexVisible = false;
               try {
                 List<AccessibilityWindowInfo> windows = getWindows();
@@ -1227,8 +1264,7 @@ jobs:
                       String pkg = (root.getPackageName() != null) ? root.getPackageName().toString().toLowerCase() : "";
                       if (pkg.contains("yandex") || pkg.contains("navi")) {
                         yandexVisible = true;
-                        String turn = collectNodes(root, nodes, speedLimHolder);
-                        if (detectedTurn.isEmpty() && !turn.isEmpty()) detectedTurn = turn;
+                        collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, 0);
                       }
                       root.recycle();
                     }
@@ -1242,110 +1278,145 @@ jobs:
                     String pkg = (root.getPackageName() != null) ? root.getPackageName().toString().toLowerCase() : "";
                     if (pkg.contains("yandex") || pkg.contains("navi")) {
                       yandexVisible = true;
-                      String turn = collectNodes(root, nodes, speedLimHolder);
-                      if (detectedTurn.isEmpty() && !turn.isEmpty()) detectedTurn = turn;
+                      collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, 0);
                     }
                     root.recycle();
                   }
                 } catch (Throwable ignored) {}
               }
-              if (yandexVisible) {
-                UsbSerialManager.markYandexForeground();
-              }
-              if (nodes.isEmpty()) return;
-              for (String s : nodes) {
-                String low = s.toLowerCase();
+              if (yandexVisible) UsbSerialManager.markYandexForeground();
+              if (items.isEmpty()) return;
+              for (NodeItem it : items) {
+                String low = it.text.toLowerCase();
                 if (low.contains("уведомлять") || low.contains("нештраф") || low.contains("звуки и оповещ")
                     || low.contains("настройки карты") || low.contains("превышение скорости")) {
                   return;
                 }
               }
-              String distStr = "";
-              String streetStr = "";
-              for (int i = 0; i < nodes.size(); i++) {
-                String s = nodes.get(i).trim();
-                if (s.isEmpty()) continue;
+              // Ищем САМУЮ ВЕРХНЮЮ дистанцию в зоне карточки маневра (top < maxManeuverY) — это НИКОГДА не нижний итог!
+              String bestDist = "";
+              String bestStreet = "";
+              int bestDistTop = Integer.MAX_VALUE;
+              Rect bestDistRect = null;
+              String detectedTurn = turnHolder[0];
+              int camDistM = 0;
+              int camLim = 0;
+              for (int i = 0; i < items.size(); i++) {
+                NodeItem it = items.get(i);
+                String s = it.text;
                 String low = s.toLowerCase();
                 if (low.contains("мин") || low.matches(".*\\b\\d{1,2}:\\d{2}\\b.*")) continue;
-                String tWord = YandexNotificationService.extractTurnWordFromText(s);
-                if (!tWord.isEmpty() && detectedTurn.isEmpty()) {
-                  detectedTurn = tWord;
-                }
-                Matcher mExact = DIST_PAT.matcher(s);
-                if (mExact.matches() && distStr.isEmpty()) {
-                  distStr = mExact.group(1).replace(',', '.') + " " + mExact.group(2).toLowerCase();
-                  if (i + 1 < nodes.size()) {
-                    String next = nodes.get(i + 1).trim();
-                    if (next.length() >= 2 && !next.toLowerCase().contains("мин") && !next.matches(".*\\b\\d{1,2}:\\d{2}\\b.*")) {
-                      streetStr = next;
-                    }
+                // Отделяем баннер камеры на экране!
+                if (UsbSerialManager.isCameraText(low)) {
+                  Matcher mC = INLINE_DIST.matcher(s);
+                  if (mC.find()) {
+                    camDistM = UsbSerialManager.parseMetersFromDistStr(mC.group(1) + " " + mC.group(2));
+                  }
+                  Matcher mL = CAM_LIM_PAT.matcher(s);
+                  if (mL.find()) {
+                    try { camLim = Integer.parseInt(mL.group(1)); } catch (Throwable ignored) {}
                   }
                   continue;
                 }
-                Matcher mIn = INLINE_DIST.matcher(s);
-                if (mIn.find() && distStr.isEmpty()) {
-                  distStr = mIn.group(1).replace(',', '.') + " " + mIn.group(2).toLowerCase();
-                  String tail = s.substring(mIn.end()).trim();
-                  if (tail.length() >= 2 && streetStr.isEmpty()) {
-                    streetStr = tail;
+                // Все, что ниже 62% высоты экрана — нижняя полоска до конечной точки, ПРОПУСКАЕМ!
+                if (it.rect.top > maxManeuverY) continue;
+                String tWord = YandexNotificationService.extractTurnWordFromText(s);
+                if (!tWord.isEmpty() && detectedTurn.isEmpty()) detectedTurn = tWord;
+                String foundD = "";
+                String inlineTail = "";
+                Matcher mExact = DIST_PAT.matcher(s);
+                if (mExact.matches()) {
+                  foundD = mExact.group(1).replace(',', '.') + " " + mExact.group(2).toLowerCase();
+                } else {
+                  Matcher mIn = INLINE_DIST.matcher(s);
+                  if (mIn.find()) {
+                    foundD = mIn.group(1).replace(',', '.') + " " + mIn.group(2).toLowerCase();
+                    inlineTail = s.substring(mIn.end()).trim();
+                  }
+                }
+                if (!foundD.isEmpty() && it.rect.top < bestDistTop) {
+                  bestDistTop = it.rect.top;
+                  bestDist = foundD;
+                  bestDistRect = it.rect;
+                  if (inlineTail.length() >= 2 && !UsbSerialManager.isCameraText(inlineTail.toLowerCase())) {
+                    bestStreet = inlineTail;
+                  } else {
+                    bestStreet = "";
                   }
                 }
               }
-              if (!distStr.isEmpty()) {
-                int distM = UsbSerialManager.parseMetersFromDistStr(distStr);
-                UsbSerialManager.markRouteSeen(distM);
-                if (!detectedTurn.isEmpty()) {
-                  UsbSerialManager.rememberTurn(detectedTurn);
-                } else {
-                  detectedTurn = UsbSerialManager.getRememberedTurn();
+              // Ищем улицу рядом с верхней карточкой маневра
+              if (!bestDist.isEmpty() && bestStreet.isEmpty() && bestDistRect != null) {
+                for (NodeItem it : items) {
+                  if (it.rect.top > maxManeuverY) continue;
+                  String s = it.text;
+                  String low = s.toLowerCase();
+                  if (s.length() < 3 || DIST_PAT.matcher(s).matches() || s.matches("^\\d+$")) continue;
+                  if (low.contains("мин") || low.matches(".*\\b\\d{1,2}:\\d{2}\\b.*") || UsbSerialManager.isCameraText(low)) continue;
+                  if (Math.abs(it.rect.top - bestDistRect.top) < 160 && Math.abs(it.rect.left - bestDistRect.left) < 340) {
+                    if (!s.equalsIgnoreCase(bestDist)) {
+                      bestStreet = s;
+                      break;
+                    }
+                  }
                 }
-                StringBuilder sb = new StringBuilder(distStr);
+              }
+              if (speedLimHolder[0] > 0) {
+                UsbSerialManager.getInstance().updateSpeedLimit(this, speedLimHolder[0], "SIGN");
+              }
+              if (camDistM > 0 || camLim > 0) {
+                UsbSerialManager.getInstance().sendCameraAlert(this, camDistM, camLim > 0 ? camLim : speedLimHolder[0], "CAM");
+              }
+              if (!bestDist.isEmpty()) {
+                int distM = UsbSerialManager.parseMetersFromDistStr(bestDist);
+                UsbSerialManager.markRouteSeen(distM);
+                // Если в полноэкранном Яндексе стрелка нарисована на Canvas, берем свежую стрелку из шторки Яндекса!
+                if (detectedTurn.isEmpty()) detectedTurn = UsbSerialManager.getRecentNotifTurn();
+                if (!detectedTurn.isEmpty()) UsbSerialManager.rememberTurn(detectedTurn);
+                else detectedTurn = UsbSerialManager.getRememberedTurn();
+                StringBuilder sb = new StringBuilder(bestDist);
                 if (!detectedTurn.isEmpty()) sb.append(" ").append(detectedTurn);
-                if (!streetStr.isEmpty() && !streetStr.equalsIgnoreCase(detectedTurn)) {
-                  sb.append(" ").append(streetStr);
+                if (!bestStreet.isEmpty() && !bestStreet.equalsIgnoreCase(detectedTurn)) {
+                  sb.append(" ").append(bestStreet);
                 }
                 UsbSerialManager.getInstance().sendYandexPayload(this, sb.toString(), "SCREEN");
               }
-              if (speedLimHolder[0] > 0) {
-                UsbSerialManager.getInstance().sendYandexPayload(this, "0 Ограничение " + speedLimHolder[0], "SIGN");
-              }
             }
-            private String collectNodes(AccessibilityNodeInfo node, List<String> out, int[] speedLimHolder) {
-              if (node == null) return "";
-              String foundTurn = "";
+            private void collectNodes(AccessibilityNodeInfo node, List<NodeItem> out, int[] speedLimHolder, String[] turnHolder, int maxManeuverY, int depth) {
+              if (node == null || depth > 16 || out.size() > 140) return;
+              Rect r = new Rect();
+              try { node.getBoundsInScreen(r); } catch (Throwable ignored) {}
               String idLow = (node.getViewIdResourceName() != null) ? node.getViewIdResourceName().toLowerCase() : "";
               String cdRaw = (node.getContentDescription() != null) ? node.getContentDescription().toString().trim() : "";
               String txtRaw = (node.getText() != null) ? node.getText().toString().trim() : "";
-              if (!idLow.isEmpty()) {
+              if (r.top <= maxManeuverY && turnHolder[0].isEmpty() && !idLow.isEmpty()) {
                 String t = ArrowBitmapClassifier.classifyResourceName(idLow);
-                if (!t.isEmpty()) foundTurn = t;
+                if (!t.isEmpty()) turnHolder[0] = t;
               }
               boolean isSpeedLimitNode = idLow.contains("limit") || cdRaw.toLowerCase().contains("огранич");
               boolean isSpeedometerNode = idLow.contains("speedometer") || idLow.contains("current_speed");
               if (isSpeedLimitNode && !isSpeedometerNode && speedLimHolder[0] == 0) {
-                String candidate = txtRaw.matches("^(20|30|40|50|60|70|80|90|100|110|120|130)$") ? txtRaw : "";
-                if (!candidate.isEmpty()) {
-                  speedLimHolder[0] = Integer.parseInt(candidate);
-                }
+                String cand = txtRaw.matches("^(20|30|40|50|60|70|80|90|100|110|120|130)$") ? txtRaw : "";
+                if (!cand.isEmpty()) speedLimHolder[0] = Integer.parseInt(cand);
               }
               if (!cdRaw.isEmpty()) {
-                out.add(cdRaw);
-                String t = YandexNotificationService.extractTurnWordFromText(cdRaw);
-                if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cdRaw);
-                if (!t.isEmpty() && foundTurn.isEmpty()) foundTurn = t;
+                out.add(new NodeItem(cdRaw, idLow, r));
+                if (r.top <= maxManeuverY && turnHolder[0].isEmpty()) {
+                  String t = YandexNotificationService.extractTurnWordFromText(cdRaw);
+                  if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cdRaw);
+                  if (!t.isEmpty()) turnHolder[0] = t;
+                }
               }
               if (!txtRaw.isEmpty() && !isSpeedometerNode) {
-                out.add(txtRaw);
+                out.add(new NodeItem(txtRaw, idLow, r));
               }
               for (int i = 0; i < node.getChildCount(); i++) {
                 AccessibilityNodeInfo ch = node.getChild(i);
                 if (ch != null) {
-                  String childTurn = collectNodes(ch, out, speedLimHolder);
-                  if (foundTurn.isEmpty() && !childTurn.isEmpty()) foundTurn = childTurn;
+                  collectNodes(ch, out, speedLimHolder, turnHolder, maxManeuverY, depth + 1);
                   ch.recycle();
                 }
               }
-              return foundTurn;
             }
             @Override
             public void onInterrupt() {}
@@ -1384,14 +1455,14 @@ jobs:
                 UsbSerialManager.getInstance().disconnect();
                 return;
               }
-              RootAutoEnabler.ensureServicesActive(context, Intent.ACTION_BOOT_COMPLETED.equals(act));
+              RootAutoEnabler.ensureServicesActive(context, false);
               UsbSerialManager.getInstance().ensureConnected(context);
             }
           }
           EOF
 
           # ------------------------------------------------------------------
-          # 8. MainActivity.java — Панель управления v4.2 + кнопка CLR
+          # 8. MainActivity.java — Панель управления v4.3 + тесты камеры и сброса
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/MainActivity.java
           package ru.vesta.hudbridge;
@@ -1415,7 +1486,7 @@ jobs:
             @Override
             protected void onCreate(Bundle savedInstanceState) {
               super.onCreate(savedInstanceState);
-              RootAutoEnabler.ensureServicesActive(this, true);
+              RootAutoEnabler.ensureServicesActive(this, false);
               UsbSerialManager.getInstance().ensureConnected(this);
               ScrollView scroll = new ScrollView(this);
               scroll.setBackgroundColor(Color.parseColor("#080C14"));
@@ -1423,12 +1494,12 @@ jobs:
               root.setOrientation(LinearLayout.VERTICAL);
               root.setPadding(32, 26, 32, 26);
               TextView title = new TextView(this);
-              title.setText("Vesta HUD Bridge v4.2 CITY-FAST (300ms + ROOT)");
+              title.setText("Vesta HUD Bridge v4.3 PRO-FIX");
               title.setTextColor(Color.parseColor("#00E67D"));
               title.setTextSize(21f);
               root.addView(title);
               TextView sub = new TextView(this);
-              sub.setText("Опрос 300 мс • Авто-сброс CLR через 3.5с • Жесткий анти-сон Teyes (WakeLock + Root Watchdog)");
+              sub.setText("Только верхняя карточка маневра • Раздельный канал Камеры • Тихий ROOT (без спама)");
               sub.setTextColor(Color.parseColor("#94A3B8"));
               sub.setTextSize(12.5f);
               sub.setPadding(0, 6, 0, 16);
@@ -1440,7 +1511,7 @@ jobs:
               statusView.setPadding(22, 16, 22, 16);
               root.addView(statusView);
               TextView logHdr = new TextView(this);
-              logHdr.setText("Живой лог перехвата ([BITMAP] / [RES_ID] / [TEXT] / [SCREEN] / [AUTO]):");
+              logHdr.setText("Живой лог ([TEXT] / [RES_ID] / [BITMAP] / [SCREEN] / [CAM] / [SIGN]):");
               logHdr.setTextColor(Color.parseColor("#00E5FF"));
               logHdr.setTextSize(12.5f);
               logHdr.setPadding(0, 14, 0, 6);
@@ -1452,7 +1523,7 @@ jobs:
               logView.setTextSize(12.5f);
               logView.setPadding(18, 14, 18, 14);
               root.addView(logView);
-              addBtn(root, "⚡ 1. Активировать всё и отключить сон через ROOT (su)", "#00C853", v -> {
+              addBtn(root, "⚡ 1. Активировать всё через ROOT (1 раз, без спама)", "#00C853", v -> {
                 RootAutoEnabler.ensureServicesActive(this, true);
                 UsbSerialManager.getInstance().ensureConnected(this);
               });
@@ -1462,10 +1533,13 @@ jobs:
               addBtn(root, "👁 3. Спец. возможности (ручная проверка)", "#1E293B", v -> {
                 startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
               });
-              addBtn(root, "⬅️ Тест по USB: 120 м Налево ул. Марджани + Знак 60", "#0284C7", v -> {
+              addBtn(root, "⬅️ Тест: 120 м Налево ул. Марджани + Знак 60", "#0284C7", v -> {
                 UsbSerialManager.rememberTurn("Налево");
                 UsbSerialManager.getInstance().sendYandexPayload(this, "120 м Налево ул. Марджани", "TEST");
-                UsbSerialManager.getInstance().sendYandexPayload(this, "0 Ограничение 60", "TEST");
+                UsbSerialManager.getInstance().updateSpeedLimit(this, 60, "TEST");
+              });
+              addBtn(root, "📷 Тест: Камера 500 м (60) — только слева!", "#B45309", v -> {
+                UsbSerialManager.getInstance().sendCameraAlert(this, 500, 60, "TEST");
               });
               addBtn(root, "🧹 Очистить экран HUD (Отправить CLR)", "#991B1B", v -> {
                 UsbSerialManager.getInstance().sendYandexPayload(this, "CLR", "TEST");
@@ -1499,11 +1573,12 @@ jobs:
                   String not = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
                   boolean accOk = (acc != null && acc.contains("ru.vesta.hudbridge"));
                   boolean notOk = (not != null && not.contains("ru.vesta.hudbridge"));
+                  int lim = UsbSerialManager.getCachedSpeedLimit();
                   String info = "Статус служб на Teyes CC3:\n"
                       + "• Чтение экрана (Accessibility): " + (accOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ (нажми кнопку 1)") + "\n"
                       + "• Перехват шторки (Notifications): " + (notOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ (нажми кнопку 1)") + "\n"
                       + "• Анти-выгрузка (KeepAlive 300мс + WakeLock): " + (HudKeepAliveService.isRunning() ? "✅ РАБОТАЕТ" : "⏳ ЗАПУСК") + "\n"
-                      + "• ROOT Watchdog (15с): " + (RootAutoEnabler.isRootActive() ? "✅ АКТИВЕН" : "⏳ Ожидает ROOT") + "\n"
+                      + "• Знак скорости в памяти: " + (lim > 0 ? (lim + " км/ч") : "нет") + "\n"
                       + "• Память стрелки (12с): " + (UsbSerialManager.getRememberedTurn().isEmpty() ? "нет" : UsbSerialManager.getRememberedTurn()) + "\n"
                       + "• USB ESP32-S3: " + UsbSerialManager.getInstance().getLastStatus();
                   statusView.setText(info);
@@ -1526,10 +1601,10 @@ jobs:
           gradle assembleDebug --no-daemon
 
       - name: 6. Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk VestaHudBridge-v4.2.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk VestaHudBridge-v4.3.apk
 
       - name: 7. Upload Ready APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: VestaHudBridge-v4.2-APK
-          path: VestaHudBridge-v4.2.apk
+          name: VestaHudBridge-v4.3-APK
+          path: VestaHudBridge-v4.3.apk
