@@ -1,4 +1,4 @@
-name: Build VestaHudBridge v4.4 REAL-LANES APK
+name: Build VestaHudBridge v4.5 EXACT-ICONS APK
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
         with:
           gradle-version: '8.4'
 
-      - name: 4. Generate Android Project Files (VestaHudBridge v4.4 REAL-LANES)
+      - name: 4. Generate Android Project Files (VestaHudBridge v4.5 EXACT-ICONS)
         run: |
           mkdir -p app/src/main/java/ru/vesta/hudbridge
           mkdir -p app/src/main/res/xml
@@ -68,8 +68,8 @@ jobs:
               applicationId "ru.vesta.hudbridge"
               minSdk 24
               targetSdk 33
-              versionCode 44
-              versionName "4.4-REAL-LANES"
+              versionCode 45
+              versionName "4.5-EXACT-ICONS"
             }
             buildTypes {
               debug {
@@ -87,8 +87,8 @@ jobs:
 
           cat << 'EOF' > app/src/main/res/values/strings.xml
           <resources>
-            <string name="app_name">Vesta HUD Bridge v4.4</string>
-            <string name="acc_desc">Перехват реальных полос движения, маневров, камер и знаков Яндекс.Навигатора для проектора Lada Vesta HUD</string>
+            <string name="app_name">Vesta HUD Bridge v4.5</string>
+            <string name="acc_desc">Передача оригинальных иконок, полос, камер и знаков Яндекс.Навигатора для проектора Lada Vesta HUD</string>
           </resources>
           EOF
 
@@ -188,7 +188,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 1. HudKeepAliveService.java — Цикл 300 мс + WakeLock + Тихий Watchdog
+          # 1. HudKeepAliveService.java — Цикл 300 мс + быстрый CAM_CLR (2.2с) + Тихий Watchdog
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/HudKeepAliveService.java
           package ru.vesta.hudbridge;
@@ -205,7 +205,7 @@ jobs:
           import java.util.concurrent.ScheduledExecutorService;
           import java.util.concurrent.TimeUnit;
           public class HudKeepAliveService extends Service {
-            private static final String CH_ID = "vesta_hud_keepalive_v44";
+            private static final String CH_ID = "vesta_hud_keepalive_v45";
             private static volatile boolean running = false;
             private ScheduledExecutorService scheduler;
             private PowerManager.WakeLock wakeLock;
@@ -235,7 +235,7 @@ jobs:
                 NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
                 Notification.Builder b;
                 if (Build.VERSION.SDK_INT >= 26) {
-                  NotificationChannel ch = new NotificationChannel(CH_ID, "Vesta HUD USB Мост v4.4", NotificationManager.IMPORTANCE_LOW);
+                  NotificationChannel ch = new NotificationChannel(CH_ID, "Vesta HUD USB Мост v4.5", NotificationManager.IMPORTANCE_LOW);
                   ch.setShowBadge(false);
                   ch.setSound(null, null);
                   if (nm != null) nm.createNotificationChannel(ch);
@@ -244,8 +244,8 @@ jobs:
                   b = new Notification.Builder(this);
                 }
                 Notification notif = b
-                    .setContentTitle("Vesta HUD USB Мост v4.4 активен")
-                    .setContentText("Реальные полосы Яндекса • 300 мс • Без спама Superuser")
+                    .setContentTitle("Vesta HUD USB Мост v4.5 активен")
+                    .setContentText("Оригинальные иконки Яндекса • 300 мс • Тихий ROOT")
                     .setSmallIcon(android.R.drawable.ic_menu_compass)
                     .setOngoing(true)
                     .build();
@@ -265,6 +265,9 @@ jobs:
                 YandexAccessibilityService.pollScreenNow();
                 YandexNotificationService.pollActiveNow();
                 usb.tickKeepSpeedLimitAlive(this, now);
+                if (UsbSerialManager.shouldSendCamClear(now)) {
+                  usb.sendCameraClear(this, "CAM_END");
+                }
                 if (UsbSerialManager.shouldSendAutoClear(now)) {
                   UsbSerialManager.clearTurnMemory();
                   usb.sendYandexPayload(this, "CLR", "AUTO");
@@ -294,7 +297,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 2. RootAutoEnabler.java — Однократный ROOT (su), далее тихо без тостов!
+          # 2. RootAutoEnabler.java — Однократный ROOT (su), далее тихо без тостов
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/RootAutoEnabler.java
           package ru.vesta.hudbridge;
@@ -394,7 +397,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 3. ArrowBitmapClassifier.java — Точный детектор "Левее vs Налево" + РЕАЛЬНЫЕ ПОЛОСЫ
+          # 3. ArrowBitmapClassifier.java — ПОПИКСЕЛЬНЫЙ ЭКСПОРТ ОРИГИНАЛЬНЫХ ИКОНОК ЯНДЕКСА
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/ArrowBitmapClassifier.java
           package ru.vesta.hudbridge;
@@ -409,9 +412,11 @@ jobs:
             private static final Pattern EXIT_ID_PAT = Pattern.compile("(?:exit|roundabout|ring|out)[_-]?([1-4])\\b");
             private static final Pattern EXIT_TXT_PAT = Pattern.compile("(?:([1-4])(?:-?й|-?ый)?\\s*съезд|съезд\\s*(?:№\\s*)?([1-4])|([1-4])\\s*выход)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             public static final class LaneAnalysis {
-              public String token = "";      // "L", "R", "S", "LS", "SR", "U"
-              public String turnName = "";   // "Левее", "Налево", "Прямо" и т.д.
-              public double contrast = 0.0;  // Визуальная контрастность стрелки (активная vs серая)
+              public String token = "";
+              public String turnName = "";
+              public double contrast = 0.0;
+              public byte[] mask48 = null;   // 48x48 = 288 байт (оригинальная иконка маневра)
+              public byte[] mask24 = null;   // 24x24 = 72 байта (оригинальная иконка полосы)
             }
             public static String extractRoundaboutExit(String text, String resName) {
               if (text != null && !text.isEmpty()) {
@@ -432,9 +437,7 @@ jobs:
               String s = name.toLowerCase();
               if (s.contains("finish") || s.contains("arrived") || s.contains("flag")) return "Почти на месте";
               if (s.contains("uturn") || s.contains("u_turn") || s.contains("reverse") || s.contains("turn_back")) return "Разворот налево";
-              if (s.contains("roundabout") || s.contains("rotary") || s.contains("circle") || s.contains("ring")) {
-                return extractRoundaboutExit("", s);
-              }
+              if (s.contains("roundabout") || s.contains("rotary") || s.contains("circle") || s.contains("ring")) return extractRoundaboutExit("", s);
               if (s.contains("hard_left") || s.contains("sharp_left") || s.contains("back_left")) return "Круто налево";
               if (s.contains("hard_right") || s.contains("sharp_right") || s.contains("back_right")) return "Круто направо";
               if (s.contains("exit_left") || s.contains("fork_left") || s.contains("ramp_left")) return "Съезд налево";
@@ -465,45 +468,57 @@ jobs:
                   d.draw(c);
                   return bmp;
                 }
-              } catch (Throwable ignored) {
-                return null;
-              }
-            }
-            public static String classifyDrawable(Drawable d) {
-              Bitmap bmp = drawableToBitmap64(d);
-              return (bmp != null) ? analyzeBitmap64(bmp, 1.0f).turnName : "";
+              } catch (Throwable ignored) { return null; }
             }
             public static LaneAnalysis analyzeDrawable(Drawable d, float viewAlpha) {
               Bitmap bmp = drawableToBitmap64(d);
               return (bmp != null) ? analyzeBitmap64(bmp, viewAlpha) : new LaneAnalysis();
             }
-            public static String classifyBitmap64(Bitmap bmp) {
-              return analyzeBitmap64(bmp, 1.0f).turnName;
+            private static byte[] packMask(boolean[][] fg, int minX, int maxX, int minY, int maxY, int N, int pad) {
+              byte[] out = new byte[(N * N) / 8];
+              int srcW = Math.max(1, maxX - minX + 1);
+              int srcH = Math.max(1, maxY - minY + 1);
+              int avail = N - pad * 2;
+              double scale = Math.min((double) avail / srcW, (double) avail / srcH);
+              double dstW = srcW * scale;
+              double dstH = srcH * scale;
+              double offX = (N - dstW) * 0.5;
+              double offY = (N - dstH) * 0.5;
+              int rowBytes = N / 8;
+              for (int dy = 0; dy < N; dy++) {
+                double syF = (dy + 0.5 - offY) / scale + minY;
+                int sy = (int) Math.floor(syF);
+                if (sy < minY || sy > maxY) continue;
+                for (int dx = 0; dx < N; dx++) {
+                  double sxF = (dx + 0.5 - offX) / scale + minX;
+                  int sx = (int) Math.floor(sxF);
+                  if (sx < minX || sx > maxX) continue;
+                  if (fg[sy][sx]) {
+                    out[dy * rowBytes + (dx >> 3)] |= (byte) (0x80 >> (dx & 7));
+                  }
+                }
+              }
+              return out;
             }
             public static LaneAnalysis analyzeBitmap64(Bitmap bmp, float viewAlpha) {
               LaneAnalysis res = new LaneAnalysis();
               if (bmp == null || bmp.getWidth() != 64 || bmp.getHeight() != 64) return res;
               try {
-                int c1 = bmp.getPixel(2, 2);
-                int c2 = bmp.getPixel(61, 2);
-                int c3 = bmp.getPixel(2, 61);
-                int c4 = bmp.getPixel(61, 61);
+                int c1 = bmp.getPixel(2, 2), c2 = bmp.getPixel(61, 2), c3 = bmp.getPixel(2, 61), c4 = bmp.getPixel(61, 61);
                 int bgAlpha = (Color.alpha(c1) + Color.alpha(c2) + Color.alpha(c3) + Color.alpha(c4)) / 4;
                 int bgLum   = (lum(c1) + lum(c2) + lum(c3) + lum(c4)) / 4;
                 boolean[][] fg = new boolean[64][64];
-                int totalFg = 0;
-                int minX = 64, maxX = -1, minY = 64, maxY = -1;
+                int totalFg = 0, minX = 64, maxX = -1, minY = 64, maxY = -1;
                 double contrastSum = 0.0;
-                for (int y = 4; y < 60; y++) {
-                  for (int x = 4; x < 60; x++) {
+                for (int y = 3; y < 61; y++) {
+                  for (int x = 3; x < 61; x++) {
                     int px = bmp.getPixel(x, y);
-                    int a = Color.alpha(px);
-                    int l = lum(px);
-                    boolean isArrow = (bgAlpha < 80) ? (a > 60) : (a > 60 && Math.abs(l - bgLum) > 38);
+                    int a = Color.alpha(px), l = lum(px);
+                    boolean isArrow = (bgAlpha < 80) ? (a > 65) : (a > 65 && Math.abs(l - bgLum) > 38);
                     if (isArrow) {
                       fg[y][x] = true;
                       totalFg++;
-                      double pxC = (bgAlpha < 80) ? (a * (1.0 - (Math.abs(l - 128) < 10 ? 0.1 : 0.0))) : (Math.abs(l - bgLum) * (a / 255.0));
+                      double pxC = (bgAlpha < 80) ? a : (Math.abs(l - bgLum) * (a / 255.0));
                       contrastSum += pxC;
                       if (x < minX) minX = x;
                       if (x > maxX) maxX = x;
@@ -512,17 +527,15 @@ jobs:
                     }
                   }
                 }
-                int spanX = maxX - minX;
-                int spanY = maxY - minY;
-                if (totalFg < 24 || totalFg > 2500 || spanX < 5 || spanY < 10) return res;
+                int spanX = maxX - minX, spanY = maxY - minY;
+                if (totalFg < 24 || totalFg > 2600 || spanX < 5 || spanY < 10) return res;
                 res.contrast = (contrastSum / totalFg) * Math.max(0.1f, viewAlpha);
-                int topLeftArch = 0, topRightArch = 0, topMidArch = 0;
-                int leftDeep = 0, rightDeep = 0, midHole = 0, ringBand = 0;
-                int botRight = 0, botLeft = 0;
+                res.mask48 = packMask(fg, minX, maxX, minY, maxY, 48, 3);
+                res.mask24 = packMask(fg, minX, maxX, minY, maxY, 24, 2);
+
+                int topLeftArch = 0, topRightArch = 0, topMidArch = 0, leftDeep = 0, rightDeep = 0, midHole = 0, ringBand = 0, botRight = 0, botLeft = 0;
                 double stemXSum = 0; int stemCount = 0;
-                double cx = (minX + maxX) * 0.5;
-                double cy = (minY + maxY) * 0.5;
-                double rad = Math.min(spanX, spanY) * 0.5;
+                double cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5, rad = Math.min(spanX, spanY) * 0.5;
                 for (int y = minY; y <= maxY; y++) {
                   double normY = (y - minY) * 100.0 / Math.max(1, spanY);
                   for (int x = minX; x <= maxX; x++) {
@@ -542,23 +555,15 @@ jobs:
                   }
                 }
                 double aspect = (double) spanX / (double) spanY;
-                if (aspect > 0.78 && aspect < 1.25 && midHole < totalFg * 0.06 && ringBand > totalFg * 0.58
-                    && topMidArch > 6 && botLeft > 4 && botRight > 4) {
-                  res.turnName = "Кольцо_0";
-                  res.token = "S";
-                  return res;
+                if (aspect > 0.78 && aspect < 1.25 && midHole < totalFg * 0.06 && ringBand > totalFg * 0.58 && topMidArch > 6 && botLeft > 4 && botRight > 4) {
+                  res.turnName = "Кольцо_0"; res.token = "S"; return res;
                 }
-                if (topLeftArch > 6 && topRightArch > 6 && topMidArch > 8
-                    && leftDeep > 12 && rightDeep > 12 && midHole < totalFg * 0.07) {
-                  res.turnName = (botRight >= botLeft) ? "Разворот налево" : "Разворот направо";
-                  res.token = "U";
-                  return res;
+                if (topLeftArch > 6 && topRightArch > 6 && topMidArch > 8 && leftDeep > 12 && rightDeep > 12 && midHole < totalFg * 0.07) {
+                  res.turnName = (botRight >= botLeft) ? "Разворот налево" : "Разворот направо"; res.token = "U"; return res;
                 }
                 double stemX = (stemCount > 4) ? (stemXSum / stemCount) : cx;
-                int leftOfStem = 0, rightOfStem = 0;
-                double leftTipYSum = 0; int leftTipCnt = 0;
-                double rightTipYSum = 0; int rightTipCnt = 0;
-                int topAboveStem = 0;
+                int leftOfStem = 0, rightOfStem = 0, leftTipCnt = 0, rightTipCnt = 0, topAboveStem = 0;
+                double leftTipYSum = 0, rightTipYSum = 0;
                 int topCheckMaxY = minY + Math.max(4, (int)(spanY * 0.22));
                 for (int y = minY; y <= maxY; y++) {
                   double normY = (y - minY) * 100.0 / Math.max(1, spanY);
@@ -587,21 +592,16 @@ jobs:
                   else res.turnName = "Направо";
                   return res;
                 }
-                if (aspect < 0.78) {
-                  res.turnName = "Прямо";
-                  res.token = "S";
-                }
+                if (aspect < 0.78) { res.turnName = "Прямо"; res.token = "S"; }
               } catch (Throwable ignored) {}
               return res;
             }
-            private static int lum(int c) {
-              return (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000;
-            }
+            private static int lum(int c) { return (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000; }
           }
           EOF
 
           # ------------------------------------------------------------------
-          # 4. UsbSerialManager.java — Раздельные каналы: Маршрут / Полосы / Камера / Знак ПДД
+          # 4. UsbSerialManager.java — Передача оригинальных ICO + LBMP + быстрый CAM_CLR
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/UsbSerialManager.java
           package ru.vesta.hudbridge;
@@ -615,26 +615,23 @@ jobs:
           import android.hardware.usb.UsbInterface;
           import android.hardware.usb.UsbManager;
           import android.os.Build;
+          import android.util.Base64;
           import java.nio.charset.StandardCharsets;
           import java.text.SimpleDateFormat;
           import java.util.Date;
           import java.util.HashMap;
           import java.util.LinkedList;
           import java.util.Locale;
+          import java.util.zip.CRC32;
           public class UsbSerialManager {
             private static UsbSerialManager instance;
             private UsbDeviceConnection connection;
             private UsbEndpoint epOut;
-            private int connectedVid = 0;
-            private int connectedPid = 0;
-            private String lastNavPacket = "";
-            private long lastNavSendTime = 0;
-            private String lastLanesPacket = "";
-            private long lastLanesSendTime = 0;
-            private String lastSignPacket = "";
-            private long lastSignSendTime = 0;
-            private String lastCamPacket = "";
-            private long lastCamSendTime = 0;
+            private int connectedVid = 0, connectedPid = 0;
+            private String lastNavPacket = "", lastLanesPacket = "", lastSignPacket = "", lastCamPacket = "";
+            private long lastNavSendTime = 0, lastLanesSendTime = 0, lastSignSendTime = 0, lastCamSendTime = 0;
+            private long lastIconCrc = 0, lastIconSendTime = 0;
+            private long lastLaneBmpCrc = 0, lastLaneBmpSendTime = 0;
             private long lastPermReqMs = 0;
             private String lastStatus = "Ожидание USB ESP32-S3...";
             private static volatile String activeTurnMemory = "";
@@ -644,6 +641,8 @@ jobs:
             private static volatile String latestRealLanes = "";
             private static volatile int cachedSpeedLimit = 0;
             private static volatile long cachedSpeedLimitMs = 0;
+            private static volatile long lastCamSeenMs = 0;
+            private static volatile boolean camActiveSent = false;
             private static volatile int lastDistMeters = -1;
             private static volatile long lastRouteSeenMs = 0;
             private static volatile boolean routeActiveSent = false;
@@ -657,7 +656,7 @@ jobs:
             public synchronized void addLog(String msg) {
               String ts = new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date());
               debugLines.addFirst(ts + " " + msg);
-              while (debugLines.size() > 10) debugLines.removeLast();
+              while (debugLines.size() > 12) debugLines.removeLast();
             }
             public synchronized String getDebugLog() {
               if (debugLines.isEmpty()) return "Ожидание событий от Яндекс.Навигатора...";
@@ -671,20 +670,15 @@ jobs:
             public static void markYandexForeground() { lastForegroundYandexMs = System.currentTimeMillis(); }
             public static boolean isYandexRecentlyForeground() { return (System.currentTimeMillis() - lastForegroundYandexMs) < 3500; }
             public static void markNotifTurn(String turn) {
-              if (turn != null && !turn.isEmpty()) {
-                latestNotifTurn = turn;
-                latestNotifTurnMs = System.currentTimeMillis();
-              }
+              if (turn != null && !turn.isEmpty()) { latestNotifTurn = turn; latestNotifTurnMs = System.currentTimeMillis(); }
             }
             public static String getRecentNotifTurn() {
-              if (System.currentTimeMillis() - latestNotifTurnMs < 5000) return latestNotifTurn;
-              return "";
+              return (System.currentTimeMillis() - latestNotifTurnMs < 5000) ? latestNotifTurn : "";
             }
             public static void markRouteSeen(int distMeters) {
               long now = System.currentTimeMillis();
               if (distMeters > 0 && lastDistMeters > 0 && distMeters > lastDistMeters + 60) {
-                activeTurnMemory = "";
-                activeTurnTime = 0;
+                activeTurnMemory = ""; activeTurnTime = 0;
               }
               if (distMeters > 0) lastDistMeters = distMeters;
               lastRouteSeenMs = now;
@@ -693,23 +687,19 @@ jobs:
             public static boolean shouldSendAutoClear(long now) {
               return routeActiveSent && lastRouteSeenMs > 0 && (now - lastRouteSeenMs >= 3500);
             }
+            public static boolean shouldSendCamClear(long now) {
+              return camActiveSent && lastCamSeenMs > 0 && (now - lastCamSeenMs >= 2200);
+            }
             public static void clearTurnMemory() {
-              activeTurnMemory = "";
-              activeTurnTime = 0;
-              latestNotifTurn = "";
-              latestNotifTurnMs = 0;
-              latestRealLanes = "";
-              lastDistMeters = -1;
-              routeActiveSent = false;
+              activeTurnMemory = ""; activeTurnTime = 0; latestNotifTurn = ""; latestNotifTurnMs = 0;
+              latestRealLanes = ""; lastDistMeters = -1; routeActiveSent = false; camActiveSent = false;
             }
             public static void rememberTurn(String turnWord) {
               if (turnWord == null || turnWord.isEmpty()) return;
-              activeTurnMemory = turnWord;
-              activeTurnTime = System.currentTimeMillis();
+              activeTurnMemory = turnWord; activeTurnTime = System.currentTimeMillis();
             }
             public static String getRememberedTurn() {
-              if (System.currentTimeMillis() - activeTurnTime < 12000) return activeTurnMemory;
-              return "";
+              return (System.currentTimeMillis() - activeTurnTime < 12000) ? activeTurnMemory : "";
             }
             public static boolean isCameraText(String low) {
               if (low == null) return false;
@@ -723,8 +713,7 @@ jobs:
                 String num = low.replaceAll("[^0-9.,]", "").replace(',', '.');
                 if (num.isEmpty()) return -1;
                 float val = Float.parseFloat(num);
-                if (low.contains("км") || low.contains("km")) return Math.round(val * 1000.0f);
-                return Math.round(val);
+                return (low.contains("км") || low.contains("km")) ? Math.round(val * 1000.0f) : Math.round(val);
               } catch (Throwable ignored) { return -1; }
             }
             public static boolean isAllowedEspSerialDevice(UsbDevice dev) {
@@ -734,8 +723,41 @@ jobs:
             }
             public synchronized void disconnect() {
               closeConnection();
-              lastStatus = "USB отключен (ожидание переподключения)";
+              lastStatus = "USB отключен";
               addLog("[USB] Устройство отключено");
+            }
+            private static long calcCrc(byte[] data) {
+              CRC32 crc = new CRC32();
+              crc.update(data);
+              return crc.getValue();
+            }
+            public synchronized void sendExactIcon48(Context ctx, byte[] mask48) {
+              if (mask48 == null || mask48.length != 288) return;
+              long crc = calcCrc(mask48);
+              long now = System.currentTimeMillis();
+              if (crc == lastIconCrc && (now - lastIconSendTime < 5000)) return;
+              if (!ensureConnected(ctx)) return;
+              String b64 = Base64.encodeToString(mask48, Base64.NO_WRAP);
+              String packet = String.format(Locale.US, "$Y,ICO %08X %s;\n", crc, b64);
+              if (writeRaw(packet)) {
+                if (crc != lastIconCrc) addLog(String.format(Locale.US, "[ICO] 48x48 (%08X)", crc));
+                lastIconCrc = crc;
+                lastIconSendTime = now;
+              }
+            }
+            public synchronized void sendExactLaneBitmaps(Context ctx, int count, int activeMask, byte[] concatMasks) {
+              if (concatMasks == null || count < 2 || count > 6 || concatMasks.length != count * 72) return;
+              long crc = calcCrc(concatMasks) ^ ((long) activeMask << 24) ^ count;
+              long now = System.currentTimeMillis();
+              if (crc == lastLaneBmpCrc && (now - lastLaneBmpSendTime < 5000)) return;
+              if (!ensureConnected(ctx)) return;
+              String b64 = Base64.encodeToString(concatMasks, Base64.NO_WRAP);
+              String packet = String.format(Locale.US, "$Y,LBMP %08X %d %d %s;\n", crc, count, activeMask, b64);
+              if (writeRaw(packet)) {
+                if (crc != lastLaneBmpCrc) addLog("[LBMP] " + count + " полос (маска " + activeMask + ")");
+                lastLaneBmpCrc = crc;
+                lastLaneBmpSendTime = now;
+              }
             }
             public synchronized void sendRealLanes(Context ctx, String lanesStr) {
               if (lanesStr == null || lanesStr.isEmpty()) return;
@@ -750,15 +772,25 @@ jobs:
             }
             public synchronized void sendCameraAlert(Context ctx, int distM, int limit, String srcTag) {
               if (distM <= 0 && limit <= 0) return;
+              long now = System.currentTimeMillis();
+              lastCamSeenMs = now;
+              camActiveSent = true;
               if (limit >= 20 && limit <= 130 && (limit % 10 == 0)) {
                 cachedSpeedLimit = limit;
-                cachedSpeedLimitMs = System.currentTimeMillis();
+                cachedSpeedLimitMs = now;
               }
               int sendLim = (limit >= 20 && limit <= 130) ? limit : cachedSpeedLimit;
               String body = (distM > 0)
                   ? (distM + " м Камера " + (sendLim > 0 ? sendLim : 0))
                   : ("200 м Камера " + (sendLim > 0 ? sendLim : 0));
               sendYandexPayload(ctx, body, srcTag);
+            }
+            public synchronized void sendCameraClear(Context ctx, String srcTag) {
+              if (!camActiveSent) return;
+              camActiveSent = false;
+              lastCamSeenMs = 0;
+              lastCamPacket = "";
+              sendYandexPayload(ctx, "CAM_CLR", srcTag);
             }
             public synchronized void tickKeepSpeedLimitAlive(Context ctx, long now) {
               if (cachedSpeedLimit >= 20 && routeActiveSent && (now - cachedSpeedLimitMs < 90000L)) {
@@ -767,25 +799,47 @@ jobs:
                 }
               }
             }
+            private boolean writeRaw(String packet) {
+              try {
+                byte[] bytes = packet.getBytes(StandardCharsets.UTF_8);
+                int off = 0;
+                while (off < bytes.length) {
+                  int chunk = Math.min(64, bytes.length - off);
+                  byte[] slice = new byte[chunk];
+                  System.arraycopy(bytes, off, slice, 0, chunk);
+                  int res = connection.bulkTransfer(epOut, slice, chunk, 250);
+                  if (res < 0) { closeConnection(); lastStatus = "Переподключение USB..."; return false; }
+                  off += chunk;
+                }
+                return true;
+              } catch (Throwable t) {
+                closeConnection();
+                lastStatus = "Ошибка USB: " + t.getMessage();
+                return false;
+              }
+            }
             public synchronized void sendYandexPayload(Context ctx, String rawBody, String srcTag) {
               if (rawBody == null) return;
               String clean = rawBody.trim().replace(";", "").replace("\r", " ").replace("\n", " ");
               while (clean.contains("  ")) clean = clean.replace("  ", " ");
               if (clean.length() < 2) return;
               boolean isClear = "CLR".equalsIgnoreCase(clean);
+              boolean isCamClr = "CAM_CLR".equalsIgnoreCase(clean);
               if (isClear) {
                 clearTurnMemory();
                 cachedSpeedLimit = 0;
+                lastIconCrc = 0;
+                lastLaneBmpCrc = 0;
               }
               String low = clean.toLowerCase();
-              if (!isClear && (low.contains("уведомлять") || low.contains("превышен") || low.contains("нештраф")
+              if (!isClear && !isCamClr && (low.contains("уведомлять") || low.contains("превышен") || low.contains("нештраф")
                   || low.contains("/ч") || low.contains("+20") || low.contains("+15")
                   || low.contains("скачивает") || low.contains("поиск спут"))) {
                 return;
               }
               boolean isSign  = clean.startsWith("0 Ограничение");
               boolean isLanes = clean.startsWith("LANES ");
-              boolean isCam   = !isLanes && low.contains("камера");
+              boolean isCam   = !isLanes && !isCamClr && low.contains("камера");
               String packet = "$Y," + clean + ";\n";
               long now = System.currentTimeMillis();
               if (isSign) {
@@ -793,10 +847,10 @@ jobs:
               } else if (isLanes) {
                 if (packet.equals(lastLanesPacket) && (now - lastLanesSendTime < 1500)) return;
               } else if (isCam) {
-                if (packet.equals(lastCamPacket) && (now - lastCamSendTime < 800)) return;
+                if (packet.equals(lastCamPacket) && (now - lastCamSendTime < 700)) return;
               } else if (isClear) {
                 if (packet.equals(lastNavPacket) && (now - lastNavSendTime < 2000)) return;
-              } else {
+              } else if (!isCamClr) {
                 if (packet.equals(lastNavPacket) && (now - lastNavSendTime < 800)) return;
               }
               if (!"SIGN_K".equals(srcTag)) addLog("[" + srcTag + "] " + clean);
@@ -804,32 +858,15 @@ jobs:
                 lastStatus = "ESP32 не найдена по USB (проверь кабель)";
                 return;
               }
-              try {
-                byte[] bytes = packet.getBytes(StandardCharsets.UTF_8);
-                int res = connection.bulkTransfer(epOut, bytes, bytes.length, 250);
-                if (res >= 0) {
-                  if (isSign) {
-                    lastSignPacket = packet; lastSignSendTime = now;
-                  } else if (isLanes) {
-                    lastLanesPacket = packet; lastLanesSendTime = now;
-                  } else if (isCam) {
-                    lastCamPacket = packet; lastCamSendTime = now;
-                  } else {
-                    lastNavPacket = packet; lastNavSendTime = now;
-                    if (isClear) {
-                      lastSignPacket = ""; lastSignSendTime = 0;
-                      lastCamPacket = ""; lastCamSendTime = 0;
-                      lastLanesPacket = ""; lastLanesSendTime = 0;
-                    }
-                  }
-                  lastStatus = String.format(Locale.US, "USB OK (%04X:%04X) • %s", connectedVid, connectedPid, clean);
-                } else {
-                  closeConnection();
-                  lastStatus = "Переподключение USB...";
+              if (writeRaw(packet)) {
+                if (isSign) { lastSignPacket = packet; lastSignSendTime = now; }
+                else if (isLanes) { lastLanesPacket = packet; lastLanesSendTime = now; }
+                else if (isCam) { lastCamPacket = packet; lastCamSendTime = now; }
+                else if (!isCamClr) {
+                  lastNavPacket = packet; lastNavSendTime = now;
+                  if (isClear) { lastSignPacket = ""; lastCamPacket = ""; lastLanesPacket = ""; }
                 }
-              } catch (Throwable t) {
-                closeConnection();
-                lastStatus = "Ошибка USB: " + t.getMessage();
+                lastStatus = String.format(Locale.US, "USB OK (%04X:%04X) • %s", connectedVid, connectedPid, clean);
               }
             }
             public synchronized boolean ensureConnected(Context ctx) {
@@ -870,17 +907,15 @@ jobs:
                 conn.claimInterface(intf, true);
                 for (int j = 0; j < intf.getEndpointCount(); j++) {
                   UsbEndpoint ep = intf.getEndpoint(j);
-                  if (ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK
-                      && ep.getDirection() == UsbConstants.USB_DIR_OUT) {
+                  if (ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.getDirection() == UsbConstants.USB_DIR_OUT) {
                     foundOut = ep;
                   }
                 }
               }
               if (foundOut != null) {
-                this.connection = conn;
-                this.epOut = foundOut;
-                this.connectedVid = dev.getVendorId();
-                this.connectedPid = dev.getProductId();
+                this.connection = conn; this.epOut = foundOut;
+                this.connectedVid = dev.getVendorId(); this.connectedPid = dev.getProductId();
+                this.lastIconCrc = 0; this.lastLaneBmpCrc = 0;
                 initSerialChip(conn, connectedVid, connectedPid);
                 lastStatus = String.format(Locale.US, "USB подключен (%04X:%04X)", connectedVid, connectedPid);
                 addLog("[USB] Подключено " + String.format(Locale.US, "%04X:%04X", connectedVid, connectedPid));
@@ -891,10 +926,7 @@ jobs:
             }
             private void initSerialChip(UsbDeviceConnection conn, int vid, int pid) {
               try {
-                byte[] lineCoding = new byte[]{
-                    (byte) 0x00, (byte) 0xC2, (byte) 0x01, (byte) 0x00,
-                    (byte) 0x00, (byte) 0x00, (byte) 0x08
-                };
+                byte[] lineCoding = new byte[]{ (byte) 0x00, (byte) 0xC2, (byte) 0x01, (byte) 0x00, 0, 0, 8 };
                 conn.controlTransfer(0x21, 0x20, 0, 0, lineCoding, lineCoding.length, 100);
                 conn.controlTransfer(0x21, 0x22, 0x03, 0, null, 0, 100);
                 if (vid == 0x10C4) {
@@ -924,7 +956,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 5. YandexNotificationService.java — Чтение ВСЕХ реальных полос из шторки Яндекса!
+          # 5. YandexNotificationService.java — Передача ТОЧНЫХ битмапов иконок и полос Яндекса
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/YandexNotificationService.java
           package ru.vesta.hudbridge;
@@ -932,7 +964,6 @@ jobs:
           import android.content.Context;
           import android.content.res.Resources;
           import android.graphics.Bitmap;
-          import android.graphics.drawable.Drawable;
           import android.graphics.drawable.Icon;
           import android.os.Bundle;
           import android.service.notification.NotificationListenerService;
@@ -954,21 +985,17 @@ jobs:
             private static final Pattern DIST_PAT = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)(?![а-яА-ЯёЁa-zA-Z])", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private static final Pattern CAM_LIM_PAT = Pattern.compile("(?:камер|радар|огранич|скорост)[^\\d]{0,16}(20|30|40|50|60|70|80|90|100|110|120|130)(?!\\d)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private int lastRouteNotifId = -999999;
+            private int lastCamNotifId = -999999;
             public static boolean isAlive() { return alive; }
             @Override
             public void onListenerConnected() {
               super.onListenerConnected();
-              instance = this;
-              alive = true;
+              instance = this; alive = true;
               RootAutoEnabler.ensureServicesActive(this, false);
               pollActiveNow();
             }
             @Override
-            public void onListenerDisconnected() {
-              alive = false;
-              instance = null;
-              super.onListenerDisconnected();
-            }
+            public void onListenerDisconnected() { alive = false; instance = null; super.onListenerDisconnected(); }
             public static void pollActiveNow() {
               YandexNotificationService svc = instance;
               if (svc == null) return;
@@ -976,9 +1003,7 @@ jobs:
                 StatusBarNotification[] list = svc.getActiveNotifications();
                 if (list == null) return;
                 for (StatusBarNotification sbn : list) {
-                  if (sbn != null && isYandexPkg(sbn.getPackageName())) {
-                    svc.processStatusBarNotification(sbn);
-                  }
+                  if (sbn != null && isYandexPkg(sbn.getPackageName())) svc.processStatusBarNotification(sbn);
                 }
               } catch (Throwable ignored) {}
             }
@@ -1010,9 +1035,7 @@ jobs:
               RemoteViews rv = (n.bigContentView != null) ? n.bigContentView : n.contentView;
               if (rv != null) {
                 inflateAndScanRemoteViews(pkg, rv, texts, resIdHolder, arrows);
-                if (resIdHolder[0].isEmpty() && arrows.isEmpty()) {
-                  inspectRemoteViewsActions(pkg, rv, resIdHolder, arrows);
-                }
+                if (resIdHolder[0].isEmpty() && arrows.isEmpty()) inspectRemoteViewsActions(pkg, rv, resIdHolder, arrows);
               }
               if (arrows.isEmpty()) {
                 try {
@@ -1024,9 +1047,7 @@ jobs:
                 } catch (Throwable ignored) {}
               }
               StringBuilder allJoined = new StringBuilder();
-              String distPart = "";
-              String streetPart = "";
-              String textTurn = "";
+              String distPart = "", streetPart = "", textTurn = "";
               int camLimitInt = 0;
               boolean hasCameraWord = false;
               for (String t : texts) {
@@ -1035,39 +1056,37 @@ jobs:
                 allJoined.append(' ').append(t);
                 if (UsbSerialManager.isCameraText(low)) hasCameraWord = true;
                 Matcher cm = CAM_LIM_PAT.matcher(t);
-                if (cm.find() && camLimitInt == 0) {
-                  try { camLimitInt = Integer.parseInt(cm.group(1)); } catch (Throwable ignored) {}
-                }
+                if (cm.find() && camLimitInt == 0) { try { camLimitInt = Integer.parseInt(cm.group(1)); } catch (Throwable ignored) {} }
                 String turnInT = extractTurnWordFromText(t);
                 if (!turnInT.isEmpty() && textTurn.isEmpty()) textTurn = turnInT;
                 Matcher m = DIST_PAT.matcher(t);
                 if (m.find() && distPart.isEmpty()) {
                   distPart = m.group(1).replace(',', '.') + " " + m.group(2).toLowerCase();
                   String after = t.substring(m.end()).trim();
-                  if (after.length() >= 2 && streetPart.isEmpty() && !isEtaOrSystemLine(after.toLowerCase())) {
-                    streetPart = after;
-                  }
+                  if (after.length() >= 2 && streetPart.isEmpty() && !isEtaOrSystemLine(after.toLowerCase())) streetPart = after;
                 } else if (streetPart.isEmpty() && t.length() >= 2 && !UsbSerialManager.isCameraText(low)) {
                   streetPart = t;
                 }
               }
               if (hasCameraWord && textTurn.isEmpty()) {
+                lastCamNotifId = sbn.getId();
                 int camDistM = UsbSerialManager.parseMetersFromDistStr(distPart);
                 UsbSerialManager.getInstance().sendCameraAlert(this, camDistM, camLimitInt, "CAM");
                 return;
               }
-              if (camLimitInt > 0) {
-                UsbSerialManager.getInstance().updateSpeedLimit(this, camLimitInt, "SIGN");
-              }
-              String realLanesStr = "";
-              String activeLaneTurn = "";
+              if (camLimitInt > 0) UsbSerialManager.getInstance().updateSpeedLimit(this, camLimitInt, "SIGN");
+
+              String realLanesStr = "", activeLaneTurn = "";
+              byte[] mainIconMask48 = null;
+              byte[] lanesConcat24 = null;
+              int laneBmpCount = 0, laneActiveMask = 0;
+
               if (arrows.size() >= 2 && arrows.size() <= 6) {
                 double maxC = 0.0;
-                for (ArrowBitmapClassifier.LaneAnalysis la : arrows) {
-                  if (la.contrast > maxC) maxC = la.contrast;
-                }
+                for (ArrowBitmapClassifier.LaneAnalysis la : arrows) if (la.contrast > maxC) maxC = la.contrast;
                 double thresh = maxC * 0.72;
                 StringBuilder lb = new StringBuilder();
+                List<byte[]> valid24 = new ArrayList<>();
                 for (ArrowBitmapClassifier.LaneAnalysis la : arrows) {
                   if (la.token.isEmpty()) continue;
                   boolean active = (la.contrast >= thresh);
@@ -1075,57 +1094,56 @@ jobs:
                   lb.append(la.token);
                   if (active) {
                     lb.append('*');
-                    if (activeLaneTurn.isEmpty() && !la.turnName.isEmpty()) {
-                      activeLaneTurn = la.turnName;
-                    }
+                    if (activeLaneTurn.isEmpty() && !la.turnName.isEmpty()) activeLaneTurn = la.turnName;
+                    if (mainIconMask48 == null && la.mask48 != null) mainIconMask48 = la.mask48;
+                  }
+                  if (la.mask24 != null && valid24.size() < 6) {
+                    if (active) laneActiveMask |= (1 << valid24.size());
+                    valid24.add(la.mask24);
                   }
                 }
                 realLanesStr = lb.toString();
+                if (valid24.size() >= 2) {
+                  laneBmpCount = valid24.size();
+                  lanesConcat24 = new byte[laneBmpCount * 72];
+                  for (int i = 0; i < laneBmpCount; i++) System.arraycopy(valid24.get(i), 0, lanesConcat24, i * 72, 72);
+                }
               } else if (arrows.size() == 1) {
                 activeLaneTurn = arrows.get(0).turnName;
+                mainIconMask48 = arrows.get(0).mask48;
               }
-              String detectedTurn = "";
-              String srcTag = "NOTIF";
-              if (!textTurn.isEmpty()) {
-                detectedTurn = textTurn;
-                srcTag = "TEXT";
-              } else if (!resIdHolder[0].isEmpty()) {
-                detectedTurn = resIdHolder[0];
-                srcTag = "RES_ID";
-              } else if (!activeLaneTurn.isEmpty()) {
-                detectedTurn = activeLaneTurn;
-                srcTag = "BITMAP";
-              }
-              if (detectedTurn.startsWith("Кольцо")) {
-                detectedTurn = ArrowBitmapClassifier.extractRoundaboutExit(allJoined.toString(), resIdHolder[0]);
-              }
+
+              String detectedTurn = "", srcTag = "NOTIF";
+              if (!textTurn.isEmpty()) { detectedTurn = textTurn; srcTag = "TEXT"; }
+              else if (!resIdHolder[0].isEmpty()) { detectedTurn = resIdHolder[0]; srcTag = "RES_ID"; }
+              else if (!activeLaneTurn.isEmpty()) { detectedTurn = activeLaneTurn; srcTag = "BITMAP"; }
+              if (detectedTurn.startsWith("Кольцо")) detectedTurn = ArrowBitmapClassifier.extractRoundaboutExit(allJoined.toString(), resIdHolder[0]);
               if (!detectedTurn.isEmpty()) UsbSerialManager.markNotifTurn(detectedTurn);
+
               boolean isFinish = "Почти на месте".equals(detectedTurn);
               if (!distPart.isEmpty() || isFinish) {
                 int distM = UsbSerialManager.parseMetersFromDistStr(distPart);
                 UsbSerialManager.markRouteSeen(distM);
-                if (!detectedTurn.isEmpty()) {
-                  UsbSerialManager.rememberTurn(detectedTurn);
-                } else {
-                  detectedTurn = UsbSerialManager.getRememberedTurn();
-                  if (!detectedTurn.isEmpty()) srcTag = "MEM";
-                }
+                if (!detectedTurn.isEmpty()) UsbSerialManager.rememberTurn(detectedTurn);
+                else { detectedTurn = UsbSerialManager.getRememberedTurn(); if (!detectedTurn.isEmpty()) srcTag = "MEM"; }
                 lastRouteNotifId = sbn.getId();
-                StringBuilder sb = new StringBuilder();
-                sb.append(!distPart.isEmpty() ? distPart : "50 м");
+                StringBuilder sb = new StringBuilder(!distPart.isEmpty() ? distPart : "50 м");
                 if (!detectedTurn.isEmpty()) sb.append(" ").append(detectedTurn);
-                if (!streetPart.isEmpty() && !streetPart.equalsIgnoreCase(detectedTurn)) {
-                  sb.append(" ").append(streetPart);
-                }
-                UsbSerialManager.getInstance().sendYandexPayload(this, sb.toString(), srcTag);
-                if (!realLanesStr.isEmpty()) {
-                  UsbSerialManager.getInstance().sendRealLanes(this, realLanesStr);
-                }
+                if (!streetPart.isEmpty() && !streetPart.equalsIgnoreCase(detectedTurn)) sb.append(" ").append(streetPart);
+                UsbSerialManager usb = UsbSerialManager.getInstance();
+                usb.sendYandexPayload(this, sb.toString(), srcTag);
+                if (mainIconMask48 != null) usb.sendExactIcon48(this, mainIconMask48);
+                if (!realLanesStr.isEmpty()) usb.sendRealLanes(this, realLanesStr);
+                if (lanesConcat24 != null && laneBmpCount >= 2) usb.sendExactLaneBitmaps(this, laneBmpCount, laneActiveMask, lanesConcat24);
               }
             }
             @Override
             public void onNotificationRemoved(StatusBarNotification sbn) {
               if (sbn == null || !isYandexPkg(sbn.getPackageName())) return;
+              if (sbn.getId() == lastCamNotifId) {
+                lastCamNotifId = -999999;
+                UsbSerialManager.getInstance().sendCameraClear(this, "CAM_CLR");
+              }
               if (sbn.getId() == lastRouteNotifId && !UsbSerialManager.isYandexRecentlyForeground()) {
                 lastRouteNotifId = -999999;
                 UsbSerialManager.getInstance().sendYandexPayload(this, "CLR", "CLR");
@@ -1139,48 +1157,31 @@ jobs:
               return false;
             }
             private void inflateAndScanRemoteViews(String pkg, RemoteViews rv, List<String> outTexts, String[] resIdHolder, List<ArrowBitmapClassifier.LaneAnalysis> arrows) {
-              View root = null;
-              Resources pkgRes = null;
+              View root = null; Resources pkgRes = null;
               try { pkgRes = getPackageManager().getResourcesForApplication(pkg); } catch (Throwable ignored) {}
-              try {
-                FrameLayout parent = new FrameLayout(this);
-                root = rv.apply(this, parent);
-              } catch (Throwable ignored) {}
+              try { root = rv.apply(this, new FrameLayout(this)); } catch (Throwable ignored) {}
               if (root == null) {
-                try {
-                  Context pkgCtx = createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY);
-                  pkgRes = pkgCtx.getResources();
-                  FrameLayout parent = new FrameLayout(pkgCtx);
-                  root = rv.apply(pkgCtx, parent);
-                } catch (Throwable ignored) {}
+                try { Context c = createPackageContext(pkg, Context.CONTEXT_IGNORE_SECURITY); pkgRes = c.getResources(); root = rv.apply(c, new FrameLayout(c)); } catch (Throwable ignored) {}
               }
               if (root != null) scanViewHierarchy(pkgRes, root, outTexts, resIdHolder, arrows);
             }
             private void inspectRemoteViewsActions(String pkg, RemoteViews rv, String[] resIdHolder, List<ArrowBitmapClassifier.LaneAnalysis> arrows) {
               try {
                 Resources res = getPackageManager().getResourcesForApplication(pkg);
-                Field actionsField = RemoteViews.class.getDeclaredField("mActions");
-                actionsField.setAccessible(true);
-                ArrayList<?> actions = (ArrayList<?>) actionsField.get(rv);
-                if (actions == null) return;
+                Field af = RemoteViews.class.getDeclaredField("mActions"); af.setAccessible(true);
+                ArrayList<?> actions = (ArrayList<?>) af.get(rv); if (actions == null) return;
                 for (Object act : actions) {
                   for (Field f : act.getClass().getDeclaredFields()) {
-                    f.setAccessible(true);
-                    Object val = f.get(act);
+                    f.setAccessible(true); Object val = f.get(act);
                     if (val instanceof Integer && resIdHolder[0].isEmpty()) {
                       int id = (Integer) val;
                       if ((id >>> 24) == 0x7f) {
-                        try {
-                          String entry = res.getResourceEntryName(id);
-                          String turn = ArrowBitmapClassifier.classifyResourceName(entry);
-                          if (!turn.isEmpty()) resIdHolder[0] = turn;
-                        } catch (Throwable ignored) {}
+                        try { String t = ArrowBitmapClassifier.classifyResourceName(res.getResourceEntryName(id)); if (!t.isEmpty()) resIdHolder[0] = t; } catch (Throwable ignored) {}
                       }
                     } else if (val instanceof Bitmap && arrows.size() < 6) {
                       Bitmap src = (Bitmap) val;
                       if (src.getWidth() >= 14 && src.getHeight() >= 14 && src.getWidth() <= src.getHeight() * 2.4f) {
-                        Bitmap bmp = Bitmap.createScaledBitmap(src, 64, 64, true);
-                        ArrowBitmapClassifier.LaneAnalysis la = ArrowBitmapClassifier.analyzeBitmap64(bmp, 1.0f);
+                        ArrowBitmapClassifier.LaneAnalysis la = ArrowBitmapClassifier.analyzeBitmap64(Bitmap.createScaledBitmap(src, 64, 64, true), 1.0f);
                         if (!la.turnName.isEmpty()) arrows.add(la);
                       }
                     }
@@ -1194,8 +1195,7 @@ jobs:
                 String cd = v.getContentDescription().toString().trim();
                 addText(outTexts, cd);
                 if (resIdHolder[0].isEmpty()) {
-                  String t = extractTurnWordFromText(cd);
-                  if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cd);
+                  String t = extractTurnWordFromText(cd); if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cd);
                   if (!t.isEmpty()) resIdHolder[0] = t;
                 }
               }
@@ -1203,28 +1203,21 @@ jobs:
               if (v.getId() != View.NO_ID && res != null) {
                 try {
                   idName = res.getResourceEntryName(v.getId()).toLowerCase();
-                  if (resIdHolder[0].isEmpty()) {
-                    String t = ArrowBitmapClassifier.classifyResourceName(idName);
-                    if (!t.isEmpty()) resIdHolder[0] = t;
-                  }
+                  if (resIdHolder[0].isEmpty()) { String t = ArrowBitmapClassifier.classifyResourceName(idName); if (!t.isEmpty()) resIdHolder[0] = t; }
                 } catch (Throwable ignored) {}
               }
-              if (v instanceof TextView) {
-                addText(outTexts, ((TextView) v).getText());
-              } else if (v instanceof ImageView && arrows.size() < 6) {
-                boolean skipIcon = idName.contains("progress") || idName.contains("logo")
-                    || idName.contains("close") || idName.contains("cancel") || idName.contains("app_icon");
+              if (v instanceof TextView) addText(outTexts, ((TextView) v).getText());
+              else if (v instanceof ImageView && arrows.size() < 6) {
+                boolean skip = idName.contains("progress") || idName.contains("logo") || idName.contains("close") || idName.contains("cancel") || idName.contains("app_icon");
                 ImageView iv = (ImageView) v;
-                if (!skipIcon && iv.getDrawable() != null) {
+                if (!skip && iv.getDrawable() != null) {
                   ArrowBitmapClassifier.LaneAnalysis la = ArrowBitmapClassifier.analyzeDrawable(iv.getDrawable(), iv.getAlpha());
                   if (!la.turnName.isEmpty()) arrows.add(la);
                 }
               }
               if (v instanceof ViewGroup) {
                 ViewGroup vg = (ViewGroup) v;
-                for (int i = 0; i < vg.getChildCount(); i++) {
-                  scanViewHierarchy(res, vg.getChildAt(i), outTexts, resIdHolder, arrows);
-                }
+                for (int i = 0; i < vg.getChildCount(); i++) scanViewHierarchy(res, vg.getChildAt(i), outTexts, resIdHolder, arrows);
               }
             }
             private void addText(List<String> list, CharSequence cs) {
@@ -1257,7 +1250,8 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 6. YandexAccessibilityService.java — Только верхняя карточка маневра + раздельные камеры
+          # 6. YandexAccessibilityService.java — Глубокий скан (40 уровней, 600 узлов)
+          #    + Поиск знака скорости по координатам + Дамп экрана Яндекса
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/YandexAccessibilityService.java
           package ru.vesta.hudbridge;
@@ -1274,30 +1268,27 @@ jobs:
           public class YandexAccessibilityService extends AccessibilityService {
             private static volatile YandexAccessibilityService instance;
             private static volatile boolean alive = false;
+            private static volatile boolean dumpRequested = false;
             private static final Pattern DIST_PAT = Pattern.compile("^(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)$", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private static final Pattern INLINE_DIST = Pattern.compile("(\\d+(?:[.,]\\d+)?)\\s*(км|м|km|m)(?![а-яА-ЯёЁa-zA-Z])", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
             private static final Pattern CAM_LIM_PAT = Pattern.compile("(?:камер|радар|огранич)[^\\d]{0,14}(20|30|40|50|60|70|80|90|100|110|120|130)(?!\\d)", Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
+            private static final Pattern SPEED_TEN_PAT = Pattern.compile("^(20|30|40|50|60|70|80|90|100|110|120|130)$");
             private volatile long lastScanMs = 0;
             private static final class NodeItem {
-              String text;
-              String idLow;
+              String text, idLow;
               Rect rect;
               NodeItem(String t, String id, Rect r) { text = t; idLow = id; rect = r; }
             }
             public static boolean isAlive() { return alive; }
+            public static void requestOneDump() { dumpRequested = true; }
             @Override
             protected void onServiceConnected() {
               super.onServiceConnected();
-              instance = this;
-              alive = true;
+              instance = this; alive = true;
               RootAutoEnabler.ensureServicesActive(this, false);
             }
             @Override
-            public void onDestroy() {
-              alive = false;
-              instance = null;
-              super.onDestroy();
-            }
+            public void onDestroy() { alive = false; instance = null; super.onDestroy(); }
             public static void pollScreenNow() {
               YandexAccessibilityService svc = instance;
               if (svc == null) return;
@@ -1313,12 +1304,12 @@ jobs:
             }
             private void scanNow() {
               lastScanMs = System.currentTimeMillis();
-              int screenH = 720;
+              int screenW = 1280, screenH = 720;
               try {
                 DisplayMetrics dm = getResources().getDisplayMetrics();
-                if (dm != null && dm.heightPixels > 200) screenH = dm.heightPixels;
+                if (dm != null && dm.heightPixels > 200) { screenW = dm.widthPixels; screenH = dm.heightPixels; }
               } catch (Throwable ignored) {}
-              int maxManeuverY = (int) (screenH * 0.62f);
+              int maxManeuverY = (int) (screenH * 0.65f);
               List<NodeItem> items = new ArrayList<>();
               int[] speedLimHolder = new int[]{0};
               String[] turnHolder = new String[]{""};
@@ -1332,7 +1323,7 @@ jobs:
                       String pkg = (root.getPackageName() != null) ? root.getPackageName().toString().toLowerCase() : "";
                       if (pkg.contains("yandex") || pkg.contains("navi")) {
                         yandexVisible = true;
-                        collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, 0);
+                        collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, screenW, screenH, 0);
                       }
                       root.recycle();
                     }
@@ -1346,32 +1337,39 @@ jobs:
                     String pkg = (root.getPackageName() != null) ? root.getPackageName().toString().toLowerCase() : "";
                     if (pkg.contains("yandex") || pkg.contains("navi")) {
                       yandexVisible = true;
-                      collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, 0);
+                      collectNodes(root, items, speedLimHolder, turnHolder, maxManeuverY, screenW, screenH, 0);
                     }
                     root.recycle();
                   }
                 } catch (Throwable ignored) {}
               }
               if (yandexVisible) UsbSerialManager.markYandexForeground();
+              if (dumpRequested && yandexVisible) {
+                dumpRequested = false;
+                UsbSerialManager.getInstance().addLog("[DUMP] Узлов Яндекса: " + items.size() + " (" + screenW + "x" + screenH + ")");
+                int shown = 0;
+                for (NodeItem it : items) {
+                  if (shown >= 8) break;
+                  UsbSerialManager.getInstance().addLog("[NODE] (" + it.rect.left + "," + it.rect.top + ") '" + it.text + "' id=" + it.idLow);
+                  shown++;
+                }
+              }
               if (items.isEmpty()) return;
               for (NodeItem it : items) {
                 String low = it.text.toLowerCase();
                 if (low.contains("уведомлять") || low.contains("нештраф") || low.contains("звуки и оповещ")
-                    || low.contains("настройки карты") || low.contains("превышение скорости")) {
-                  return;
-                }
+                    || low.contains("настройки карты") || low.contains("превышение скорости")) return;
               }
-              String bestDist = "";
-              String bestStreet = "";
+
+              String bestDist = "", bestStreet = "";
               int bestDistTop = Integer.MAX_VALUE;
               Rect bestDistRect = null;
               String detectedTurn = turnHolder[0];
-              int camDistM = 0;
-              int camLim = 0;
+              int camDistM = 0, camLim = 0;
+
               for (int i = 0; i < items.size(); i++) {
                 NodeItem it = items.get(i);
-                String s = it.text;
-                String low = s.toLowerCase();
+                String s = it.text, low = s.toLowerCase();
                 if (low.contains("мин") || low.matches(".*\\b\\d{1,2}:\\d{2}\\b.*")) continue;
                 if (UsbSerialManager.isCameraText(low)) {
                   Matcher mC = INLINE_DIST.matcher(s);
@@ -1380,40 +1378,40 @@ jobs:
                   if (mL.find()) { try { camLim = Integer.parseInt(mL.group(1)); } catch (Throwable ignored) {} }
                   continue;
                 }
-                if (it.rect.top > maxManeuverY) continue;
-                String tWord = YandexNotificationService.extractTurnWordFromText(s);
-                if (!tWord.isEmpty() && detectedTurn.isEmpty()) detectedTurn = tWord;
-                String foundD = "";
-                String inlineTail = "";
-                Matcher mExact = DIST_PAT.matcher(s);
-                if (mExact.matches()) {
-                  foundD = mExact.group(1).replace(',', '.') + " " + mExact.group(2).toLowerCase();
-                } else {
-                  Matcher mIn = INLINE_DIST.matcher(s);
-                  if (mIn.find()) {
-                    foundD = mIn.group(1).replace(',', '.') + " " + mIn.group(2).toLowerCase();
-                    inlineTail = s.substring(mIn.end()).trim();
+                if (speedLimHolder[0] == 0 && SPEED_TEN_PAT.matcher(s).matches() && it.rect.top < screenH * 0.55f) {
+                  boolean isSpeedo = it.idLow.contains("speedometer") || it.idLow.contains("current_speed");
+                  if (!isSpeedo && (it.rect.left > screenW * 0.55f || it.rect.top < screenH * 0.35f)) {
+                    try { speedLimHolder[0] = Integer.parseInt(s); } catch (Throwable ignored) {}
                   }
                 }
+                if (it.rect.top > maxManeuverY && it.rect.bottom > 0) continue;
+                String tWord = YandexNotificationService.extractTurnWordFromText(s);
+                if (!tWord.isEmpty() && detectedTurn.isEmpty()) detectedTurn = tWord;
+                String foundD = "", inlineTail = "";
+                Matcher mExact = DIST_PAT.matcher(s);
+                if (mExact.matches()) foundD = mExact.group(1).replace(',', '.') + " " + mExact.group(2).toLowerCase();
+                else {
+                  Matcher mIn = INLINE_DIST.matcher(s);
+                  if (mIn.find()) { foundD = mIn.group(1).replace(',', '.') + " " + mIn.group(2).toLowerCase(); inlineTail = s.substring(mIn.end()).trim(); }
+                }
                 if (!foundD.isEmpty() && it.rect.top < bestDistTop) {
-                  bestDistTop = it.rect.top;
-                  bestDist = foundD;
-                  bestDistRect = it.rect;
+                  bestDistTop = it.rect.top; bestDist = foundD; bestDistRect = it.rect;
                   bestStreet = (inlineTail.length() >= 2 && !UsbSerialManager.isCameraText(inlineTail.toLowerCase())) ? inlineTail : "";
                 }
               }
+
               if (!bestDist.isEmpty() && bestStreet.isEmpty() && bestDistRect != null) {
                 for (NodeItem it : items) {
-                  if (it.rect.top > maxManeuverY) continue;
-                  String s = it.text;
-                  String low = s.toLowerCase();
+                  if (it.rect.top > maxManeuverY && it.rect.bottom > 0) continue;
+                  String s = it.text, low = s.toLowerCase();
                   if (s.length() < 3 || DIST_PAT.matcher(s).matches() || s.matches("^\\d+$")) continue;
                   if (low.contains("мин") || low.matches(".*\\b\\d{1,2}:\\d{2}\\b.*") || UsbSerialManager.isCameraText(low)) continue;
-                  if (Math.abs(it.rect.top - bestDistRect.top) < 160 && Math.abs(it.rect.left - bestDistRect.left) < 340) {
+                  if (Math.abs(it.rect.top - bestDistRect.top) < 180 && Math.abs(it.rect.left - bestDistRect.left) < 380) {
                     if (!s.equalsIgnoreCase(bestDist)) { bestStreet = s; break; }
                   }
                 }
               }
+
               if (speedLimHolder[0] > 0) UsbSerialManager.getInstance().updateSpeedLimit(this, speedLimHolder[0], "SIGN");
               if (camDistM > 0 || camLim > 0) UsbSerialManager.getInstance().sendCameraAlert(this, camDistM, camLim > 0 ? camLim : speedLimHolder[0], "CAM");
               if (!bestDist.isEmpty()) {
@@ -1428,26 +1426,26 @@ jobs:
                 UsbSerialManager.getInstance().sendYandexPayload(this, sb.toString(), "SCREEN");
               }
             }
-            private void collectNodes(AccessibilityNodeInfo node, List<NodeItem> out, int[] speedLimHolder, String[] turnHolder, int maxManeuverY, int depth) {
-              if (node == null || depth > 16 || out.size() > 140) return;
+            private void collectNodes(AccessibilityNodeInfo node, List<NodeItem> out, int[] speedLimHolder, String[] turnHolder, int maxManeuverY, int screenW, int screenH, int depth) {
+              if (node == null || depth > 40 || out.size() > 600) return;
               Rect r = new Rect();
               try { node.getBoundsInScreen(r); } catch (Throwable ignored) {}
               String idLow = (node.getViewIdResourceName() != null) ? node.getViewIdResourceName().toLowerCase() : "";
               String cdRaw = (node.getContentDescription() != null) ? node.getContentDescription().toString().trim() : "";
               String txtRaw = (node.getText() != null) ? node.getText().toString().trim() : "";
-              if (r.top <= maxManeuverY && turnHolder[0].isEmpty() && !idLow.isEmpty()) {
+              if ((r.top <= maxManeuverY || r.bottom == 0) && turnHolder[0].isEmpty() && !idLow.isEmpty()) {
                 String t = ArrowBitmapClassifier.classifyResourceName(idLow);
                 if (!t.isEmpty()) turnHolder[0] = t;
               }
-              boolean isSpeedLimitNode = idLow.contains("limit") || cdRaw.toLowerCase().contains("огранич");
+              boolean isSpeedLimitNode = idLow.contains("limit") || idLow.contains("sign") || cdRaw.toLowerCase().contains("огранич");
               boolean isSpeedometerNode = idLow.contains("speedometer") || idLow.contains("current_speed");
               if (isSpeedLimitNode && !isSpeedometerNode && speedLimHolder[0] == 0) {
-                String cand = txtRaw.matches("^(20|30|40|50|60|70|80|90|100|110|120|130)$") ? txtRaw : "";
-                if (!cand.isEmpty()) speedLimHolder[0] = Integer.parseInt(cand);
+                String cand = SPEED_TEN_PAT.matcher(txtRaw).matches() ? txtRaw : (SPEED_TEN_PAT.matcher(cdRaw).matches() ? cdRaw : "");
+                if (!cand.isEmpty()) { try { speedLimHolder[0] = Integer.parseInt(cand); } catch (Throwable ignored) {} }
               }
               if (!cdRaw.isEmpty()) {
                 out.add(new NodeItem(cdRaw, idLow, r));
-                if (r.top <= maxManeuverY && turnHolder[0].isEmpty()) {
+                if ((r.top <= maxManeuverY || r.bottom == 0) && turnHolder[0].isEmpty()) {
                   String t = YandexNotificationService.extractTurnWordFromText(cdRaw);
                   if (t.isEmpty()) t = ArrowBitmapClassifier.classifyResourceName(cdRaw);
                   if (!t.isEmpty()) turnHolder[0] = t;
@@ -1457,7 +1455,7 @@ jobs:
               for (int i = 0; i < node.getChildCount(); i++) {
                 AccessibilityNodeInfo ch = node.getChild(i);
                 if (ch != null) {
-                  collectNodes(ch, out, speedLimHolder, turnHolder, maxManeuverY, depth + 1);
+                  collectNodes(ch, out, speedLimHolder, turnHolder, maxManeuverY, screenW, screenH, depth + 1);
                   ch.recycle();
                 }
               }
@@ -1495,10 +1493,7 @@ jobs:
             @Override
             public void onReceive(Context context, Intent intent) {
               String act = (intent != null && intent.getAction() != null) ? intent.getAction() : "";
-              if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(act)) {
-                UsbSerialManager.getInstance().disconnect();
-                return;
-              }
+              if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(act)) { UsbSerialManager.getInstance().disconnect(); return; }
               RootAutoEnabler.ensureServicesActive(context, false);
               UsbSerialManager.getInstance().ensureConnected(context);
             }
@@ -1506,7 +1501,7 @@ jobs:
           EOF
 
           # ------------------------------------------------------------------
-          # 8. MainActivity.java — Панель управления v4.4 + тест реальных полос
+          # 8. MainActivity.java — Панель v4.5 + кнопка Дампа открытого экрана Яндекса
           # ------------------------------------------------------------------
           cat << 'EOF' > app/src/main/java/ru/vesta/hudbridge/MainActivity.java
           package ru.vesta.hudbridge;
@@ -1524,8 +1519,7 @@ jobs:
           import android.widget.ScrollView;
           import android.widget.TextView;
           public class MainActivity extends Activity {
-            private TextView statusView;
-            private TextView logView;
+            private TextView statusView, logView;
             private final Handler handler = new Handler(Looper.getMainLooper());
             @Override
             protected void onCreate(Bundle savedInstanceState) {
@@ -1538,12 +1532,12 @@ jobs:
               root.setOrientation(LinearLayout.VERTICAL);
               root.setPadding(32, 26, 32, 26);
               TextView title = new TextView(this);
-              title.setText("Vesta HUD Bridge v4.4 REAL-LANES");
+              title.setText("Vesta HUD Bridge v4.5 EXACT-ICONS");
               title.setTextColor(Color.parseColor("#00E67D"));
               title.setTextSize(21f);
               root.addView(title);
               TextView sub = new TextView(this);
-              sub.setText("Реальные полосы из шторки Яндекса • Точное «Левее vs Налево» • Тихий ROOT");
+              sub.setText("Оригинальные иконки Яндекса (48x48 + полосы 24x24) • Быстрый сброс камеры • Глубокий скан экрана");
               sub.setTextColor(Color.parseColor("#94A3B8"));
               sub.setTextSize(12.5f);
               sub.setPadding(0, 6, 0, 16);
@@ -1555,7 +1549,7 @@ jobs:
               statusView.setPadding(22, 16, 22, 16);
               root.addView(statusView);
               TextView logHdr = new TextView(this);
-              logHdr.setText("Живой лог ([LANES] / [BITMAP] / [TEXT] / [SCREEN] / [CAM] / [SIGN]):");
+              logHdr.setText("Живой лог ([ICO] / [LBMP] / [SCREEN] / [CAM] / [SIGN] / [DUMP]):");
               logHdr.setTextColor(Color.parseColor("#00E5FF"));
               logHdr.setTextSize(12.5f);
               logHdr.setPadding(0, 14, 0, 6);
@@ -1564,47 +1558,33 @@ jobs:
               logView.setBackgroundColor(Color.parseColor("#05080F"));
               logView.setTextColor(Color.parseColor("#00E67D"));
               logView.setTypeface(Typeface.MONOSPACE);
-              logView.setTextSize(12.5f);
+              logView.setTextSize(12f);
               logView.setPadding(18, 14, 18, 14);
               root.addView(logView);
               addBtn(root, "⚡ 1. Активировать всё через ROOT (1 раз, без спама)", "#00C853", v -> {
                 RootAutoEnabler.ensureServicesActive(this, true);
                 UsbSerialManager.getInstance().ensureConnected(this);
               });
-              addBtn(root, "🔔 2. Доступ к уведомлениям (ручная проверка)", "#1E293B", v -> {
-                startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"));
+              addBtn(root, "🔔 2. Уведомления (вручную)", "#1E293B", v -> startActivity(new Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")));
+              addBtn(root, "👁 3. Спец. возможности (вручную)", "#1E293B", v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+              addBtn(root, "🔍 Снять дамп открытого экрана Яндекса (открой Яндекс сразу после нажатия)", "#6D28D9", v -> {
+                UsbSerialManager.getInstance().addLog("[DUMP] Переключитесь на Яндекс.Навигатор...");
+                YandexAccessibilityService.requestOneDump();
               });
-              addBtn(root, "👁 3. Спец. возможности (ручная проверка)", "#1E293B", v -> {
-                startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+              addBtn(root, "📷 Тест: Знак 40 + Камера 300 м (как в Яндексе)", "#B45309", v -> {
+                UsbSerialManager.getInstance().sendCameraAlert(this, 300, 40, "TEST");
               });
-              addBtn(root, "↖️ Тест: 800 м Левее + Полосы L*|LS*|S", "#0284C7", v -> {
-                UsbSerialManager.rememberTurn("Левее");
-                UsbSerialManager.getInstance().sendYandexPayload(this, "800 м Левее Набережно-Челнинское шоссе", "TEST");
-                UsbSerialManager.getInstance().sendRealLanes(this, "L*|LS*|S");
-              });
-              addBtn(root, "📷 Тест: Камера 500 м (60)", "#B45309", v -> {
-                UsbSerialManager.getInstance().sendCameraAlert(this, 500, 60, "TEST");
-              });
-              addBtn(root, "🧹 Очистить экран HUD (Отправить CLR)", "#991B1B", v -> {
-                UsbSerialManager.getInstance().sendYandexPayload(this, "CLR", "TEST");
-              });
+              addBtn(root, "🧹 Очистить HUD (CLR)", "#991B1B", v -> UsbSerialManager.getInstance().sendYandexPayload(this, "CLR", "TEST"));
               scroll.addView(root);
               setContentView(scroll);
               handler.post(updateLoop);
             }
             private void addBtn(LinearLayout parent, String text, String bgHex, android.view.View.OnClickListener l) {
               Button b = new Button(this);
-              b.setText(text);
-              b.setAllCaps(false);
-              b.setTextColor(Color.WHITE);
-              b.setTextSize(14.5f);
+              b.setText(text); b.setAllCaps(false); b.setTextColor(Color.WHITE); b.setTextSize(14f);
               b.setBackgroundColor(Color.parseColor(bgHex));
-              LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                  LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-              lp.setMargins(0, 12, 0, 0);
-              b.setLayoutParams(lp);
-              b.setGravity(Gravity.CENTER);
-              b.setOnClickListener(l);
+              LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+              lp.setMargins(0, 10, 0, 0); b.setLayoutParams(lp); b.setGravity(Gravity.CENTER); b.setOnClickListener(l);
               parent.addView(b);
             }
             private final Runnable updateLoop = new Runnable() {
@@ -1618,11 +1598,11 @@ jobs:
                   int lim = UsbSerialManager.getCachedSpeedLimit();
                   String lanes = UsbSerialManager.getLatestRealLanes();
                   String info = "Статус служб на Teyes CC3:\n"
-                      + "• Чтение экрана (Accessibility): " + (accOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ (нажми кнопку 1)") + "\n"
-                      + "• Перехват шторки (Notifications): " + (notOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ (нажми кнопку 1)") + "\n"
-                      + "• Анти-выгрузка (KeepAlive 300мс + WakeLock): " + (HudKeepAliveService.isRunning() ? "✅ РАБОТАЕТ" : "⏳ ЗАПУСК") + "\n"
-                      + "• Реальные полосы Яндекса: " + (lanes.isEmpty() ? "нет" : lanes) + "\n"
-                      + "• Знак скорости в памяти: " + (lim > 0 ? (lim + " км/ч") : "нет") + "\n"
+                      + "• Чтение экрана (Accessibility): " + (accOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ") + "\n"
+                      + "• Перехват шторки (Notifications): " + (notOk ? "✅ ВКЛЮЧЕНА" : "❌ ВЫКЛ") + "\n"
+                      + "• KeepAlive (300мс + WakeLock): " + (HudKeepAliveService.isRunning() ? "✅ РАБОТАЕТ" : "⏳ ЗАПУСК") + "\n"
+                      + "• Реальные полосы: " + (lanes.isEmpty() ? "нет" : lanes) + "\n"
+                      + "• Знак скорости: " + (lim > 0 ? (lim + " км/ч") : "нет") + "\n"
                       + "• USB ESP32-S3: " + UsbSerialManager.getInstance().getLastStatus();
                   statusView.setText(info);
                   logView.setText(UsbSerialManager.getInstance().getDebugLog());
@@ -1631,10 +1611,7 @@ jobs:
               }
             };
             @Override
-            protected void onDestroy() {
-              super.onDestroy();
-              handler.removeCallbacksAndMessages(null);
-            }
+            protected void onDestroy() { super.onDestroy(); handler.removeCallbacksAndMessages(null); }
           }
           EOF
 
@@ -1644,10 +1621,10 @@ jobs:
           gradle assembleDebug --no-daemon
 
       - name: 6. Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk VestaHudBridge-v4.4.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk VestaHudBridge-v4.5.apk
 
       - name: 7. Upload Ready APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: VestaHudBridge-v4.4-APK
-          path: VestaHudBridge-v4.4.apk
+          name: VestaHudBridge-v4.5-APK
+          path: VestaHudBridge-v4.5.apk
